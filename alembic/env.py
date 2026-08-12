@@ -14,10 +14,15 @@ if config.config_file_name is not None:
 
 # Override DB URL from env if set
 db_url = os.getenv("DATABASE_URL")
-if db_url:
-    sync_url = re.sub(r"\+asyncpg", "+psycopg2", db_url)
-    sync_url = re.sub(r"\+aiosqlite", "", sync_url)
-    config.set_main_option("sqlalchemy.url", sync_url)
+if not db_url:
+    raise RuntimeError(
+        "DATABASE_URL is not set. Add the Postgres connection string "
+        "(e.g. from your Render Postgres service) as a DATABASE_URL "
+        "environment variable."
+    )
+sync_url = re.sub(r"\+asyncpg", "+psycopg2", db_url)
+sync_url = re.sub(r"\+aiosqlite", "", sync_url)
+config.set_main_option("sqlalchemy.url", sync_url)
 
 from app.database import Base
 from app.models import Country, State, City, Player, Team, OTP
