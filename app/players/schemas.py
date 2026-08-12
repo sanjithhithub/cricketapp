@@ -1,0 +1,100 @@
+from pydantic import BaseModel, field_validator
+from datetime import date
+from typing import Optional
+
+
+class PlayerBase(BaseModel):
+    first_name: str
+    last_name: str
+    date_of_birth: date
+    gender: str
+    profile_image: Optional[str] = None
+    batting_hand: str
+    batting_position: str
+    bowling_hand: str
+    bowling_type: str
+    country_id: int
+    state_id: int
+    city_id: int
+    height: float
+    weight: float
+    country_code: str
+    mobile_number: int
+    email: str
+
+    @field_validator("gender")
+    @classmethod
+    def validate_gender(cls, v):
+        if v not in ("male", "female", "other"):
+            raise ValueError("gender must be male, female, or other")
+        return v
+
+    @field_validator("batting_hand")
+    @classmethod
+    def validate_batting_hand(cls, v):
+        if v not in ("L", "R"):
+            raise ValueError("batting_hand must be L or R")
+        return v
+
+    @field_validator("batting_position")
+    @classmethod
+    def validate_batting_position(cls, v):
+        if v not in ("op", "mid", "tail", "wk"):
+            raise ValueError("batting_position must be op, mid, tail, or wk")
+        return v
+
+    @field_validator("bowling_hand")
+    @classmethod
+    def validate_bowling_hand(cls, v):
+        if v not in ("L", "R"):
+            raise ValueError("bowling_hand must be L or R")
+        return v
+
+    @field_validator("bowling_type")
+    @classmethod
+    def validate_bowling_type(cls, v):
+        if v not in ("fast", "mfast", "spin"):
+            raise ValueError("bowling_type must be fast, mfast, or spin")
+        return v
+
+
+class PlayerCreate(PlayerBase):
+    pass
+
+
+class PlayerUpdate(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    date_of_birth: Optional[date] = None
+    gender: Optional[str] = None
+    profile_image: Optional[str] = None
+    batting_hand: Optional[str] = None
+    batting_position: Optional[str] = None
+    bowling_hand: Optional[str] = None
+    bowling_type: Optional[str] = None
+    country_id: Optional[int] = None
+    state_id: Optional[int] = None
+    city_id: Optional[int] = None
+    height: Optional[float] = None
+    weight: Optional[float] = None
+    country_code: Optional[str] = None
+    mobile_number: Optional[int] = None
+    email: Optional[str] = None
+
+
+class PlayerResponse(PlayerBase):
+    id: int
+    is_phone_verified: bool = False
+
+    class Config:
+        from_attributes = True
+
+
+class PlayerCreateResponse(PlayerResponse):
+    message: str
+    otp_sent: bool
+
+
+class ResendOTPResponse(BaseModel):
+    message: str
+    otp_sent: bool

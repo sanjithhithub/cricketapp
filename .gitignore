@@ -1,0 +1,24 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Secrets - DO NOT COMMIT
+.env
+.env.*
+firebase-service-account.json
+
+# Database
+cricket.db
+*.sqlite3
+
+# Logs
+*.log
+
+# Runtime uploads
+uploads/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
