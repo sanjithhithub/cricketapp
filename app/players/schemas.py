@@ -21,6 +21,7 @@ class PlayerBase(BaseModel):
     country_code: str
     mobile_number: int
     email: str
+    team_id: Optional[int] = None
 
     @field_validator("gender")
     @classmethod
@@ -80,6 +81,7 @@ class PlayerUpdate(BaseModel):
     country_code: Optional[str] = None
     mobile_number: Optional[int] = None
     email: Optional[str] = None
+    team_id: Optional[int] = None
 
 
 class PlayerResponse(PlayerBase):

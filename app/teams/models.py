@@ -1,14 +1,6 @@
-from sqlalchemy import String, Integer, ForeignKey, BigInteger, Table, Column
+from sqlalchemy import String, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
-
-
-team_players = Table(
-    "team_players",
-    Base.metadata,
-    Column("team_id", ForeignKey("teams.id"), primary_key=True),
-    Column("player_id", ForeignKey("players.id"), primary_key=True),
-)
 
 
 class Team(Base):
@@ -26,7 +18,7 @@ class Team(Base):
     state_id: Mapped[int] = mapped_column(ForeignKey("states.id"))
     city_id: Mapped[int] = mapped_column(ForeignKey("cities.id"))
 
-    players: Mapped[list["Player"]] = relationship(secondary=team_players)
+    players: Mapped[list["Player"]] = relationship(back_populates="team")
     country: Mapped["Country"] = relationship()
     state: Mapped["State"] = relationship()
     city: Mapped["City"] = relationship()

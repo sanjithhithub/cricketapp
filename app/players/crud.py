@@ -32,6 +32,25 @@ async def get_player_by_phone(db: AsyncSession, country_code: str, mobile_number
     return result.scalar_one_or_none()
 
 
+async def search_players(db: AsyncSession, query: str, skip: int = 0, limit: int = 100):
+    result = await db.execute(
+        select(Player).where(
+            or_(
+                Player.first_name.ilike(f"%{query}%"),
+                Player.last_name.ilike(f"%{query}%"),
+            )
+        ).offset(skip).limit(limit)
+    )
+    return result.scalars().all()
+
+
+async def get_unassigned_players(db: AsyncSession, skip: int = 0, limit: int = 100):
+    result = await db.execute(
+        select(Player).where(Player.team_id.is_(None)).offset(skip).limit(limit)
+    )
+    return result.scalars().all()
+
+
 async def _create_otp_record(db: AsyncSession, country_code: str, mobile_number: int):
     otp_code = f"{random.randint(100000, 999999)}"
     expires_at = datetime.utcnow() + timedelta(minutes=5)

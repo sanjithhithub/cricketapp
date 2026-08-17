@@ -16,6 +16,8 @@ from app.players.crud import (
     replace_player,
     delete_player,
     resend_otp_for_player,
+    search_players,
+    get_unassigned_players,
 )
 
 router = APIRouter(tags=["players"])
@@ -28,6 +30,25 @@ async def list_players(
     db: AsyncSession = Depends(get_db),
 ):
     return await get_players(db, skip=skip, limit=limit)
+
+
+@router.get("/players/search", response_model=list[PlayerResponse])
+async def search_players_endpoint(
+    q: str = Query(..., min_length=1, description="Search by first or last name"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    return await search_players(db, q, skip=skip, limit=limit)
+
+
+@router.get("/players/unassigned", response_model=list[PlayerResponse])
+async def list_unassigned_players(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    return await get_unassigned_players(db, skip=skip, limit=limit)
 
 
 @router.post("/players", response_model=PlayerCreateResponse, status_code=201)

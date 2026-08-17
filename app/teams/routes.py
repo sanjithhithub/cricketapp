@@ -3,7 +3,7 @@ import shutil
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
-from app.teams.schemas import TeamCreate, TeamUpdate, TeamResponse, TeamPlayerAdd, PlayerOnTeam
+from app.teams.schemas import TeamCreate, TeamUpdate, TeamResponse, TeamPlayerAdd, PlayerOnTeam, TeamPlayerAddById, TeamBulkPlayerAdd
 from app.teams.crud import (
     get_teams,
     get_team,
@@ -12,6 +12,8 @@ from app.teams.crud import (
     replace_team,
     delete_team,
     add_player_to_team,
+    add_player_by_id,
+    bulk_add_players,
     remove_player_from_team,
     update_team_logo,
 )
@@ -88,12 +90,44 @@ async def add_player_to_team_endpoint(
     data: TeamPlayerAdd,
     db: AsyncSession = Depends(get_db),
 ):
-    player = await add_player_to_team(
+    player, error = await add_player_to_team(
         db, team_id, data.country_code, data.mobile_number
     )
+    if error:
+        raise HTTPException(400, error)
     if player is None:
         raise HTTPException(404, "Team or Player not found")
     return player
+
+
+@router.post("/teams/{team_id}/players/by-id", response_model=PlayerOnTeam, status_code=201)
+async def add_player_by_id_endpoint(
+    team_id: int,
+    data: TeamPlayerAddById,
+    db: AsyncSession = Depends(get_db),
+):
+    player, error = await add_player_by_id(db, team_id, data.player_id)
+    if error:
+        raise HTTPException(400, error)
+    if player is None:
+        raise HTTPException(404, "Team or Player not found")
+    return player
+
+
+@router.post("/teams/{team_id}/players/bulk")
+async def bulk_add_players_endpoint(
+    team_id: int,
+    data: TeamBulkPlayerAdd,
+    db: AsyncSession = Depends(get_db),
+):
+    added, errors = await bulk_add_players(db, team_id, data.player_ids)
+    if added is None:
+        raise HTTPException(404, errors)
+    return {
+        "added": len(added),
+        "errors": errors,
+        "players": added,
+    }
 
 
 @router.get("/teams/{team_id}/players", response_model=list[PlayerOnTeam])

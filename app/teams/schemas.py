@@ -56,3 +56,11 @@ class TeamResponse(TeamBase):
 class TeamPlayerAdd(BaseModel):
     country_code: str
     mobile_number: int
+
+
+class TeamPlayerAddById(BaseModel):
+    player_id: int
+
+
+class TeamBulkPlayerAdd(BaseModel):
+    player_ids: list[int]

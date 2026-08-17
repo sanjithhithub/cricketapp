@@ -1,6 +1,6 @@
 from datetime import date
 from sqlalchemy import String, Integer, Float, Date, ForeignKey, BigInteger, Boolean, UniqueConstraint
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 
@@ -29,3 +29,6 @@ class Player(Base):
     mobile_number: Mapped[int] = mapped_column(BigInteger)
     email: Mapped[str] = mapped_column(String(100), unique=True)
     is_phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+
+    team: Mapped["Team | None"] = relationship(back_populates="players")
