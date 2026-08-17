@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db, engine, Base
@@ -22,6 +23,15 @@ from app.players.crud import mark_player_phone_verified
 from app.seed import seed_locations
 
 app = FastAPI(title="CricketApp")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(players_router)
 app.include_router(teams_router)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
