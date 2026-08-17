@@ -19,6 +19,7 @@ from app.crud import (
 )
 from app.players.routes import router as players_router
 from app.teams.routes import router as teams_router
+from app.levels.routes import router as levels_router
 from app.players.crud import mark_player_phone_verified
 from app.seed import seed_locations
 
@@ -34,6 +35,7 @@ app.add_middleware(
 
 app.include_router(players_router)
 app.include_router(teams_router)
+app.include_router(levels_router)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 

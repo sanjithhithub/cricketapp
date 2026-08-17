@@ -29,6 +29,5 @@ class Player(Base):
     mobile_number: Mapped[int] = mapped_column(BigInteger)
     email: Mapped[str] = mapped_column(String(100), unique=True)
     is_phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
-    team_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
 
-    team: Mapped["Team | None"] = relationship(back_populates="players")
+    assignments: Mapped[list["PlayerTeamAssignment"]] = relationship(back_populates="player")

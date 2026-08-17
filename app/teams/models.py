@@ -1,6 +1,21 @@
-from sqlalchemy import String, Integer, ForeignKey
+from sqlalchemy import String, Integer, ForeignKey, Table, Column
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
+
+
+class PlayerTeamAssignment(Base):
+    __tablename__ = "player_team_assignments"
+    __table_args__ = (
+        Column("player_id", ForeignKey("players.id"), primary_key=True),
+        Column("team_id", ForeignKey("teams.id"), primary_key=True),
+        Column("level_id", ForeignKey("team_levels.id"), primary_key=True),
+    )
+
+    role: Mapped[str] = mapped_column(String(20), default="playing_11")
+
+    player: Mapped["Player"] = relationship()
+    team: Mapped["Team"] = relationship()
+    level: Mapped["TeamLevel"] = relationship()
 
 
 class Team(Base):
@@ -17,8 +32,10 @@ class Team(Base):
     country_id: Mapped[int] = mapped_column(ForeignKey("countries.id"))
     state_id: Mapped[int] = mapped_column(ForeignKey("states.id"))
     city_id: Mapped[int] = mapped_column(ForeignKey("cities.id"))
+    level_id: Mapped[int] = mapped_column(ForeignKey("team_levels.id"))
 
-    players: Mapped[list["Player"]] = relationship(back_populates="team")
+    level: Mapped["TeamLevel"] = relationship(back_populates="teams")
+    assignments: Mapped[list["PlayerTeamAssignment"]] = relationship(back_populates="team")
     country: Mapped["Country"] = relationship()
     state: Mapped["State"] = relationship()
     city: Mapped["City"] = relationship()

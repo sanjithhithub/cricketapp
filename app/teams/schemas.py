@@ -13,6 +13,7 @@ class TeamBase(BaseModel):
     country_id: int
     state_id: int
     city_id: int
+    level_id: int
 
 
 class TeamCreate(TeamBase):
@@ -30,6 +31,7 @@ class TeamUpdate(BaseModel):
     country_id: Optional[int] = None
     state_id: Optional[int] = None
     city_id: Optional[int] = None
+    level_id: Optional[int] = None
 
 
 class PlayerOnTeam(BaseModel):
@@ -47,7 +49,6 @@ class PlayerOnTeam(BaseModel):
 
 class TeamResponse(TeamBase):
     id: int
-    players: list[PlayerOnTeam] = []
 
     class Config:
         from_attributes = True
@@ -64,3 +65,23 @@ class TeamPlayerAddById(BaseModel):
 
 class TeamBulkPlayerAdd(BaseModel):
     player_ids: list[int]
+
+
+class SquadPlayer(BaseModel):
+    id: int
+    first_name: str
+    last_name: str
+    profile_image: Optional[str] = None
+    role: str
+
+    class Config:
+        from_attributes = True
+
+
+class TeamSquadResponse(BaseModel):
+    team_id: int
+    team_name: str
+    level: str
+    total: int
+    playing_11: list[SquadPlayer]
+    substitutes: list[SquadPlayer]

@@ -1,11 +1,15 @@
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, func
 from app.players.models import Player
-from app.players.schemas import PlayerCreate, PlayerUpdate
+from app.teams.models import PlayerTeamAssignment, Team
+from app.levels.models import TeamLevel
+from app.players.schemas import PlayerCreate, PlayerUpdate, TeamAssignment
 from app.models import OTP
 from app.sms import send_otp
 import random
+
+MAX_SQUAD_SIZE = 15
 
 
 async def get_players(db: AsyncSession, skip: int = 0, limit: int = 100):
@@ -45,8 +49,9 @@ async def search_players(db: AsyncSession, query: str, skip: int = 0, limit: int
 
 
 async def get_unassigned_players(db: AsyncSession, skip: int = 0, limit: int = 100):
+    subq = select(PlayerTeamAssignment.player_id).distinct().scalar_subquery()
     result = await db.execute(
-        select(Player).where(Player.team_id.is_(None)).offset(skip).limit(limit)
+        select(Player).where(Player.id.notin_(subq)).offset(skip).limit(limit)
     )
     return result.scalars().all()
 
@@ -145,3 +150,110 @@ async def mark_player_phone_verified(
         await db.commit()
         return True
     return False
+
+
+async def assign_player_to_team(db: AsyncSession, player_id: int, data: TeamAssignment):
+    player_result = await db.execute(select(Player).where(Player.id == player_id))
+    player = player_result.scalar_one_or_none()
+    if not player:
+        return None, "Player not found"
+
+    team_result = await db.execute(select(Team).where(Team.id == data.team_id))
+    team = team_result.scalar_one_or_none()
+    if not team:
+        return None, "Team not found"
+
+    level_result = await db.execute(select(TeamLevel).where(TeamLevel.id == data.level_id))
+    level = level_result.scalar_one_or_none()
+    if not level:
+        return None, "Level not found"
+
+    existing = await db.execute(
+        select(PlayerTeamAssignment).where(
+            PlayerTeamAssignment.player_id == player_id,
+            PlayerTeamAssignment.level_id == data.level_id,
+        )
+    )
+    existing_assignment = existing.scalar_one_or_none()
+    if existing_assignment:
+        existing_team = await db.execute(select(Team).where(Team.id == existing_assignment.team_id))
+        existing_team_name = existing_team.scalar_one_or_none()
+        team_name = existing_team_name.name if existing_team_name else "another team"
+        return None, f"Player already has a team at '{level.name}' level: '{team_name}'"
+
+    squad_count = await db.execute(
+        select(func.count(PlayerTeamAssignment.player_id))
+        .where(
+            PlayerTeamAssignment.team_id == data.team_id,
+            PlayerTeamAssignment.level_id == data.level_id,
+        )
+    )
+    count = squad_count.scalar()
+    if count >= MAX_SQUAD_SIZE:
+        return None, f"Team squad is full (max {MAX_SQUAD_SIZE} players)"
+
+    assignment = PlayerTeamAssignment(
+        player_id=player_id,
+        team_id=data.team_id,
+        level_id=data.level_id,
+        role=data.role,
+    )
+    db.add(assignment)
+    await db.commit()
+    return assignment, None
+
+
+async def get_player_teams(db: AsyncSession, player_id: int):
+    result = await db.execute(
+        select(PlayerTeamAssignment)
+        .where(PlayerTeamAssignment.player_id == player_id)
+    )
+    assignments = result.scalars().all()
+
+    teams = []
+    for a in assignments:
+        team_result = await db.execute(select(Team).where(Team.id == a.team_id))
+        team = team_result.scalar_one_or_none()
+        level_result = await db.execute(select(TeamLevel).where(TeamLevel.id == a.level_id))
+        level = level_result.scalar_one_or_none()
+
+        teams.append({
+            "team_id": a.team_id,
+            "team_name": team.name if team else "Unknown",
+            "level_id": a.level_id,
+            "level_name": level.name if level else "Unknown",
+            "role": a.role,
+        })
+
+    return teams
+
+
+async def update_player_team_role(db: AsyncSession, player_id: int, team_id: int, role: str):
+    result = await db.execute(
+        select(PlayerTeamAssignment).where(
+            PlayerTeamAssignment.player_id == player_id,
+            PlayerTeamAssignment.team_id == team_id,
+        )
+    )
+    assignment = result.scalar_one_or_none()
+    if not assignment:
+        return None, "Assignment not found"
+
+    assignment.role = role
+    await db.commit()
+    return assignment, None
+
+
+async def remove_player_from_team(db: AsyncSession, player_id: int, team_id: int):
+    result = await db.execute(
+        select(PlayerTeamAssignment).where(
+            PlayerTeamAssignment.player_id == player_id,
+            PlayerTeamAssignment.team_id == team_id,
+        )
+    )
+    assignment = result.scalar_one_or_none()
+    if not assignment:
+        return False
+    await db.delete(assignment)
+    await db.commit()
+    return True

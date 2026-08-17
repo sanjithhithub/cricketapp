@@ -21,7 +21,6 @@ class PlayerBase(BaseModel):
     country_code: str
     mobile_number: int
     email: str
-    team_id: Optional[int] = None
 
     @field_validator("gender")
     @classmethod
@@ -81,7 +80,6 @@ class PlayerUpdate(BaseModel):
     country_code: Optional[str] = None
     mobile_number: Optional[int] = None
     email: Optional[str] = None
-    team_id: Optional[int] = None
 
 
 class PlayerResponse(PlayerBase):
@@ -100,3 +98,38 @@ class PlayerCreateResponse(PlayerResponse):
 class ResendOTPResponse(BaseModel):
     message: str
     otp_sent: bool
+
+
+class TeamAssignment(BaseModel):
+    team_id: int
+    level_id: int
+    role: str = "playing_11"
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v):
+        if v not in ("playing_11", "substitute"):
+            raise ValueError("role must be playing_11 or substitute")
+        return v
+
+
+class TeamAssignmentUpdate(BaseModel):
+    role: str
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v):
+        if v not in ("playing_11", "substitute"):
+            raise ValueError("role must be playing_11 or substitute")
+        return v
+
+
+class PlayerTeamInfo(BaseModel):
+    team_id: int
+    team_name: str
+    level_id: int
+    level_name: str
+    role: str
+
+    class Config:
+        from_attributes = True

@@ -3,19 +3,13 @@ import shutil
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
-from app.teams.schemas import TeamCreate, TeamUpdate, TeamResponse, TeamPlayerAdd, PlayerOnTeam, TeamPlayerAddById, TeamBulkPlayerAdd
+from app.teams.schemas import (
+    TeamCreate, TeamUpdate, TeamResponse, TeamPlayerAdd, PlayerOnTeam,
+    TeamPlayerAddById, TeamBulkPlayerAdd, TeamSquadResponse,
+)
 from app.teams.crud import (
-    get_teams,
-    get_team,
-    create_team,
-    update_team,
-    replace_team,
-    delete_team,
-    add_player_to_team,
-    add_player_by_id,
-    bulk_add_players,
-    remove_player_from_team,
-    update_team_logo,
+    get_teams, get_team, get_team_squad, create_team, update_team,
+    replace_team, delete_team, update_team_logo,
 )
 
 router = APIRouter(tags=["teams"])
@@ -26,9 +20,10 @@ UPLOAD_DIR = "uploads/teams"
 async def list_teams(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
+    level_id: int | None = Query(None, description="Filter by team level"),
     db: AsyncSession = Depends(get_db),
 ):
-    return await get_teams(db, skip=skip, limit=limit)
+    return await get_teams(db, skip=skip, limit=limit, level_id=level_id)
 
 
 @router.post("/teams", response_model=TeamResponse, status_code=201)
@@ -48,6 +43,17 @@ async def get_team_endpoint(
     if not team:
         raise HTTPException(404, "Team not found")
     return team
+
+
+@router.get("/teams/{team_id}/squad")
+async def get_team_squad_endpoint(
+    team_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    squad = await get_team_squad(db, team_id)
+    if not squad:
+        raise HTTPException(404, "Team not found")
+    return squad
 
 
 @router.put("/teams/{team_id}", response_model=TeamResponse)
@@ -82,74 +88,6 @@ async def delete_team_endpoint(
     deleted = await delete_team(db, team_id)
     if not deleted:
         raise HTTPException(404, "Team not found")
-
-
-@router.post("/teams/{team_id}/players", response_model=PlayerOnTeam, status_code=201)
-async def add_player_to_team_endpoint(
-    team_id: int,
-    data: TeamPlayerAdd,
-    db: AsyncSession = Depends(get_db),
-):
-    player, error = await add_player_to_team(
-        db, team_id, data.country_code, data.mobile_number
-    )
-    if error:
-        raise HTTPException(400, error)
-    if player is None:
-        raise HTTPException(404, "Team or Player not found")
-    return player
-
-
-@router.post("/teams/{team_id}/players/by-id", response_model=PlayerOnTeam, status_code=201)
-async def add_player_by_id_endpoint(
-    team_id: int,
-    data: TeamPlayerAddById,
-    db: AsyncSession = Depends(get_db),
-):
-    player, error = await add_player_by_id(db, team_id, data.player_id)
-    if error:
-        raise HTTPException(400, error)
-    if player is None:
-        raise HTTPException(404, "Team or Player not found")
-    return player
-
-
-@router.post("/teams/{team_id}/players/bulk")
-async def bulk_add_players_endpoint(
-    team_id: int,
-    data: TeamBulkPlayerAdd,
-    db: AsyncSession = Depends(get_db),
-):
-    added, errors = await bulk_add_players(db, team_id, data.player_ids)
-    if added is None:
-        raise HTTPException(404, errors)
-    return {
-        "added": len(added),
-        "errors": errors,
-        "players": added,
-    }
-
-
-@router.get("/teams/{team_id}/players", response_model=list[PlayerOnTeam])
-async def list_team_players(
-    team_id: int,
-    db: AsyncSession = Depends(get_db),
-):
-    team = await get_team(db, team_id)
-    if not team:
-        raise HTTPException(404, "Team not found")
-    return team.players
-
-
-@router.delete("/teams/{team_id}/players/{player_id}", status_code=204)
-async def remove_player_from_team_endpoint(
-    team_id: int,
-    player_id: int,
-    db: AsyncSession = Depends(get_db),
-):
-    removed = await remove_player_from_team(db, team_id, player_id)
-    if not removed:
-        raise HTTPException(404, "Player not found in team")
 
 
 @router.post("/teams/{team_id}/upload-logo")

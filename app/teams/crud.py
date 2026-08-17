@@ -1,23 +1,76 @@
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
-from app.teams.models import Team
+from app.teams.models import Team, PlayerTeamAssignment
 from app.players.models import Player
 from app.teams.schemas import TeamCreate, TeamUpdate
 
 
-async def get_teams(db: AsyncSession, skip: int = 0, limit: int = 100):
-    result = await db.execute(
-        select(Team).options(selectinload(Team.players)).offset(skip).limit(limit)
-    )
+MAX_SQUAD_SIZE = 15
+
+
+async def get_teams(db: AsyncSession, skip: int = 0, limit: int = 100, level_id: int | None = None):
+    query = select(Team)
+    if level_id is not None:
+        query = query.where(Team.level_id == level_id)
+    query = query.offset(skip).limit(limit)
+    result = await db.execute(query)
     return result.scalars().all()
 
 
 async def get_team(db: AsyncSession, team_id: int):
     result = await db.execute(
-        select(Team).options(selectinload(Team.players)).where(Team.id == team_id)
+        select(Team).where(Team.id == team_id)
     )
     return result.scalar_one_or_none()
+
+
+async def get_team_squad(db: AsyncSession, team_id: int):
+    result = await db.execute(
+        select(Team).options(selectinload(Team.level)).where(Team.id == team_id)
+    )
+    team = result.scalar_one_or_none()
+    if not team:
+        return None
+
+    assignments_result = await db.execute(
+        select(PlayerTeamAssignment)
+        .options(selectinload(PlayerTeamAssignment.player))
+        .where(PlayerTeamAssignment.team_id == team_id)
+    )
+    assignments = assignments_result.scalars().all()
+
+    playing_11 = []
+    substitutes = []
+    for a in assignments:
+        player_data = SquadPlayer(
+            id=a.player.id,
+            first_name=a.player.first_name,
+            last_name=a.player.last_name,
+            profile_image=a.player.profile_image,
+            role=a.role,
+        )
+        if a.role == "playing_11":
+            playing_11.append(player_data)
+        else:
+            substitutes.append(player_data)
+
+    return {
+        "team_id": team.id,
+        "team_name": team.name,
+        "level": team.level.name,
+        "total": len(assignments),
+        "playing_11": playing_11,
+        "substitutes": substitutes,
+    }
+
+
+async def get_team_squad_count(db: AsyncSession, team_id: int):
+    result = await db.execute(
+        select(func.count(PlayerTeamAssignment.player_id))
+        .where(PlayerTeamAssignment.team_id == team_id)
+    )
+    return result.scalar()
 
 
 async def create_team(db: AsyncSession, data: TeamCreate):
@@ -25,10 +78,7 @@ async def create_team(db: AsyncSession, data: TeamCreate):
     db.add(team)
     await db.commit()
     await db.refresh(team)
-    result = await db.execute(
-        select(Team).options(selectinload(Team.players)).where(Team.id == team.id)
-    )
-    return result.scalar_one()
+    return team
 
 
 async def update_team(db: AsyncSession, team_id: int, data: TeamUpdate):
@@ -39,10 +89,7 @@ async def update_team(db: AsyncSession, team_id: int, data: TeamUpdate):
     for key, val in data.model_dump(exclude_unset=True).items():
         setattr(team, key, val)
     await db.commit()
-    result = await db.execute(
-        select(Team).options(selectinload(Team.players)).where(Team.id == team_id)
-    )
-    return result.scalar_one_or_none()
+    return team
 
 
 async def replace_team(db: AsyncSession, team_id: int, data: TeamCreate):
@@ -53,10 +100,7 @@ async def replace_team(db: AsyncSession, team_id: int, data: TeamCreate):
     for key, val in data.model_dump().items():
         setattr(team, key, val)
     await db.commit()
-    result = await db.execute(
-        select(Team).options(selectinload(Team.players)).where(Team.id == team_id)
-    )
-    return result.scalar_one_or_none()
+    return team
 
 
 async def delete_team(db: AsyncSession, team_id: int):
@@ -65,117 +109,6 @@ async def delete_team(db: AsyncSession, team_id: int):
     if not team:
         return False
     await db.delete(team)
-    await db.commit()
-    return True
-
-
-async def add_player_to_team(
-    db: AsyncSession,
-    team_id: int,
-    country_code: str,
-    mobile_number: int,
-):
-    team_result = await db.execute(select(Team).where(Team.id == team_id))
-    team = team_result.scalar_one_or_none()
-    if not team:
-        return None, "Team not found"
-
-    player_result = await db.execute(
-        select(Player).where(
-            Player.country_code == country_code,
-            Player.mobile_number == mobile_number,
-        )
-    )
-    player = player_result.scalar_one_or_none()
-    if not player:
-        return None, "Player not found"
-
-    if player.team_id is not None:
-        if player.team_id == team_id:
-            return player, None
-        existing_team = await db.execute(select(Team).where(Team.id == player.team_id))
-        existing_team_name = existing_team.scalar_one_or_none()
-        team_name = existing_team_name.name if existing_team_name else "another team"
-        return None, f"Player already belongs to team '{team_name}'"
-
-    player.team_id = team_id
-    await db.commit()
-    await db.refresh(player)
-    return player, None
-
-
-async def add_player_by_id(
-    db: AsyncSession,
-    team_id: int,
-    player_id: int,
-):
-    team_result = await db.execute(select(Team).where(Team.id == team_id))
-    team = team_result.scalar_one_or_none()
-    if not team:
-        return None, "Team not found"
-
-    player_result = await db.execute(select(Player).where(Player.id == player_id))
-    player = player_result.scalar_one_or_none()
-    if not player:
-        return None, "Player not found"
-
-    if player.team_id is not None:
-        if player.team_id == team_id:
-            return player, None
-        existing_team = await db.execute(select(Team).where(Team.id == player.team_id))
-        existing_team_name = existing_team.scalar_one_or_none()
-        team_name = existing_team_name.name if existing_team_name else "another team"
-        return None, f"Player already belongs to team '{team_name}'"
-
-    player.team_id = team_id
-    await db.commit()
-    await db.refresh(player)
-    return player, None
-
-
-async def bulk_add_players(
-    db: AsyncSession,
-    team_id: int,
-    player_ids: list[int],
-):
-    team_result = await db.execute(select(Team).where(Team.id == team_id))
-    team = team_result.scalar_one_or_none()
-    if not team:
-        return None, "Team not found"
-
-    added = []
-    errors = []
-    for pid in player_ids:
-        player_result = await db.execute(select(Player).where(Player.id == pid))
-        player = player_result.scalar_one_or_none()
-        if not player:
-            errors.append(f"Player {pid} not found")
-            continue
-        if player.team_id is not None:
-            if player.team_id == team_id:
-                added.append(player)
-                continue
-            existing_team = await db.execute(select(Team).where(Team.id == player.team_id))
-            existing_team_name = existing_team.scalar_one_or_none()
-            team_name = existing_team_name.name if existing_team_name else "another team"
-            errors.append(f"Player '{player.first_name} {player.last_name}' already belongs to team '{team_name}'")
-            continue
-        player.team_id = team_id
-        added.append(player)
-
-    await db.commit()
-    return added, errors
-
-
-async def remove_player_from_team(db: AsyncSession, team_id: int, player_id: int):
-    player_result = await db.execute(
-        select(Player).where(Player.id == player_id, Player.team_id == team_id)
-    )
-    player = player_result.scalar_one_or_none()
-    if not player:
-        return False
-
-    player.team_id = None
     await db.commit()
     return True
 

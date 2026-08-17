@@ -26,6 +26,8 @@ config.set_main_option("sqlalchemy.url", sync_url)
 
 from app.database import Base
 from app.models import Country, State, City, Player, Team, OTP
+from app.levels.models import TeamLevel
+from app.teams.models import PlayerTeamAssignment
 
 target_metadata = Base.metadata
 
