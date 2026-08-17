@@ -18,6 +18,11 @@ cricket.db
 # Runtime uploads
 uploads/
 
+# Generated on the server
+deploy/nginx.conf
+deploy/certbot/
+deploy/.env
+
 # Editor / OS
 .vscode/
 .idea/

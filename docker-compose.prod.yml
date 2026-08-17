@@ -1,0 +1,62 @@
+services:
+  cricketapp:
+    build: .
+    container_name: cricketapp
+    environment:
+      DATABASE_URL: postgresql+asyncpg://cricket:${POSTGRES_PASSWORD}@cricketdb:5432/cricketdb
+      TWO_FACTOR_API_KEY: ${TWO_FACTOR_API_KEY}
+      TWO_FACTOR_OTP_TEMPLATE: ${TWO_FACTOR_OTP_TEMPLATE}
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      cricketdb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+  cricketdb:
+    image: postgres:16-alpine
+    container_name: cricketdb
+    environment:
+      POSTGRES_USER: cricket
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: cricketdb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cricket -d cricketdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: cricketapp-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/app.conf:ro
+      - ./deploy/certbot/conf:/etc/letsencrypt
+      - ./deploy/certbot/www:/var/www/certbot
+    depends_on:
+      - cricketapp
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    container_name: cricketapp-certbot
+    volumes:
+      - ./deploy/certbot/conf:/etc/letsencrypt
+      - ./deploy/certbot/www:/var/www/certbot
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet && sleep 12h & wait $${!}; done'"
+
+volumes:
+  pgdata:
+  uploads:
