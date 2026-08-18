@@ -53,11 +53,6 @@ async def shutdown():
     await engine.dispose()
 
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
 @app.get("/locations", response_model=list[CountryOut])
 async def list_locations(db: AsyncSession = Depends(get_db)):
     return await get_all_countries(db)
