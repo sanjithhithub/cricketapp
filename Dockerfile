@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN chmod +x docker-entrypoint.sh
+RUN mkdir -p uploads && chmod +x docker-entrypoint.sh
 
 EXPOSE 8000
 
