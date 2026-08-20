@@ -7,7 +7,6 @@ from app.levels.models import TeamLevel
 from app.players.schemas import PlayerCreate, PlayerUpdate, TeamAssignment
 from app.models import OTP
 from app.sms import send_otp
-import random
 
 MAX_SQUAD_SIZE = 15
 
@@ -57,13 +56,13 @@ async def get_unassigned_players(db: AsyncSession, skip: int = 0, limit: int = 1
 
 
 async def _create_otp_record(db: AsyncSession, country_code: str, mobile_number: int):
-    otp_code = f"{random.randint(100000, 999999)}"
+    otp_sent, session_info = await send_otp(country_code, mobile_number)
     expires_at = datetime.utcnow() + timedelta(minutes=5)
-    otp_sent = await send_otp(country_code, mobile_number, otp_code)
     otp = OTP(
         country_code=country_code,
         mobile_number=mobile_number,
-        otp_code=otp_code,
+        otp_code="",
+        session_id=session_info,
         expires_at=expires_at,
     )
     db.add(otp)

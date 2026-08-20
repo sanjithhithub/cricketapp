@@ -42,7 +42,7 @@ class OTP(Base):
     country_code: Mapped[str] = mapped_column(String(5))
     mobile_number: Mapped[int] = mapped_column(BigInteger)
     otp_code: Mapped[str] = mapped_column(String(6))
-    session_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

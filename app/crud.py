@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from app.models import Country, State, City, OTP
+from app.sms import verify_otp
 
 
 async def get_all_countries(db: AsyncSession):
@@ -64,7 +65,11 @@ async def verify_otp_code(
     if not otp:
         return False
 
-    if otp.otp_code != otp_code:
+    if not otp.session_id:
+        return False
+
+    valid = await verify_otp(otp.session_id, otp_code)
+    if not valid:
         return False
 
     otp.is_verified = True
