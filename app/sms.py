@@ -1,5 +1,10 @@
 import os
 import logging
+import random
+import string
+
+from dotenv import load_dotenv
+load_dotenv()
 
 import httpx
 from twilio.rest import Client as TwilioClient
@@ -8,6 +13,7 @@ logger = logging.getLogger("app.sms")
 
 SMS_PROVIDER = os.getenv("SMS_PROVIDER", "test")
 TEST_OTP_CODE = os.getenv("TEST_OTP_CODE", "123456")
+TWO_FACTOR_API_KEY = os.getenv("TWO_FACTOR_API_KEY", "")
 MSG91_AUTH_KEY = os.getenv("MSG91_AUTH_KEY", "")
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
@@ -31,6 +37,9 @@ async def send_otp(country_code: str, mobile_number: int) -> tuple[bool, str | N
     if SMS_PROVIDER == "twilio":
         return await _send_twilio_otp(country_code, mobile_number)
 
+    if SMS_PROVIDER == "2factor":
+        return await _send_2factor_otp(country_code, mobile_number)
+
     from app.firebase import send_firebase_otp
     return await send_firebase_otp(country_code, mobile_number)
 
@@ -46,6 +55,9 @@ async def verify_otp(session_info: str, code: str) -> bool:
 
     if SMS_PROVIDER == "twilio":
         return await _verify_twilio_otp(session_info, code)
+
+    if SMS_PROVIDER == "2factor":
+        return await _verify_2factor_otp(session_info, code)
 
     from app.firebase import verify_firebase_otp
     return await verify_firebase_otp(session_info, code)
@@ -135,3 +147,30 @@ async def _verify_twilio_otp(session_info: str, code: str) -> bool:
     except Exception:
         logger.exception("Twilio verify_otp raised for %s", phone)
         return False
+
+
+async def _send_2factor_otp(country_code: str, mobile_number: int) -> tuple[bool, str | None]:
+    phone = _format_phone(country_code, mobile_number)
+    phone_no_plus = phone.lstrip("+")
+
+    otp_code = "".join(random.choices(string.digits, k=6))
+    url = f"https://2factor.in/API/V1/{TWO_FACTOR_API_KEY}/SMS/{phone_no_plus}/{otp_code}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, timeout=15)
+            data = resp.json()
+            if data.get("Status") == "Success":
+                logger.info("2Factor OTP sent to %s, otp=%s", phone, otp_code)
+                return True, otp_code
+            logger.error("2Factor send OTP failed: %s", data)
+            return False, None
+    except Exception:
+        logger.exception("2Factor send_otp raised for %s", phone)
+        return False, None
+
+
+async def _verify_2factor_otp(stored_otp: str, code: str) -> bool:
+    valid = stored_otp == code
+    logger.info("2Factor verify: stored=%s code=%s valid=%s", stored_otp, code, valid)
+    return valid

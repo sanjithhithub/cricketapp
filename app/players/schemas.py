@@ -32,30 +32,50 @@ class PlayerBase(BaseModel):
     @field_validator("batting_hand")
     @classmethod
     def validate_batting_hand(cls, v):
-        if v not in ("L", "R"):
-            raise ValueError("batting_hand must be L or R")
-        return v
+        mapping = {
+            "left": "Left", "right": "Right",
+            "l": "Left", "r": "Right",
+        }
+        if v.lower() in mapping:
+            return mapping[v.lower()]
+        raise ValueError("batting_hand must be Left or Right")
 
     @field_validator("batting_position")
     @classmethod
     def validate_batting_position(cls, v):
-        if v not in ("op", "mid", "tail", "wk"):
-            raise ValueError("batting_position must be op, mid, tail, or wk")
-        return v
+        mapping = {
+            "opening": "Opening", "op": "Opening",
+            "middle": "Middle Order", "mid": "Middle Order",
+            "tail": "Tail Ender", "wk": "Wicket Keeper",
+            "wicket keeper": "Wicket Keeper",
+            "tail ender": "Tail Ender", "middle order": "Middle Order",
+        }
+        if v.lower() in mapping:
+            return mapping[v.lower()]
+        raise ValueError("batting_position must be Opening, Middle Order, Tail Ender, or Wicket Keeper")
 
     @field_validator("bowling_hand")
     @classmethod
     def validate_bowling_hand(cls, v):
-        if v not in ("L", "R"):
-            raise ValueError("bowling_hand must be L or R")
-        return v
+        mapping = {
+            "left": "Left", "right": "Right",
+            "l": "Left", "r": "Right",
+        }
+        if v.lower() in mapping:
+            return mapping[v.lower()]
+        raise ValueError("bowling_hand must be Left or Right")
 
     @field_validator("bowling_type")
     @classmethod
     def validate_bowling_type(cls, v):
-        if v not in ("fast", "mfast", "spin"):
-            raise ValueError("bowling_type must be fast, mfast, or spin")
-        return v
+        mapping = {
+            "fast": "Fast",
+            "medium fast": "Medium Fast", "mfast": "Medium Fast", "medium": "Medium Fast",
+            "spin": "Spin",
+        }
+        if v.lower() in mapping:
+            return mapping[v.lower()]
+        raise ValueError("bowling_type must be Fast, Medium Fast, or Spin")
 
 
 class PlayerCreate(PlayerBase):
