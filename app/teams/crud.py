@@ -3,7 +3,7 @@ from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
 from app.teams.models import Team, PlayerTeamAssignment
 from app.players.models import Player
-from app.teams.schemas import TeamCreate, TeamUpdate
+from app.teams.schemas import TeamCreate, TeamUpdate, SquadPlayer
 
 
 MAX_SQUAD_SIZE = 15

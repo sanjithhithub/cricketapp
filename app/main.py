@@ -23,7 +23,7 @@ from app.levels.routes import router as levels_router
 from app.players.crud import mark_player_phone_verified
 from app.seed import seed_locations
 
-app = FastAPI(title="CricketApp")
+app = FastAPI(title="CricketApp", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,9 +33,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(players_router)
-app.include_router(teams_router)
-app.include_router(levels_router)
+API_V1_PREFIX = "/v1"
+
+app.include_router(players_router, prefix=API_V1_PREFIX)
+app.include_router(teams_router, prefix=API_V1_PREFIX)
+app.include_router(levels_router, prefix=API_V1_PREFIX)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
@@ -58,17 +60,17 @@ async def health():
     return {"status": "ok"}
 
 
-@app.get("/locations", response_model=list[CountryOut])
+@app.get("/v1/locations", response_model=list[CountryOut])
 async def list_locations(db: AsyncSession = Depends(get_db)):
     return await get_all_countries(db)
 
 
-@app.get("/country-codes", response_model=list[CountryCodeOut])
+@app.get("/v1/country-codes", response_model=list[CountryCodeOut])
 async def list_country_codes():
     return await get_country_codes()
 
 
-@app.post("/verify-otp", response_model=OTPVerifyResponse)
+@app.post("/v1/verify-otp", response_model=OTPVerifyResponse)
 async def verify_otp(
     data: OTPVerifyRequest,
     db: AsyncSession = Depends(get_db),
