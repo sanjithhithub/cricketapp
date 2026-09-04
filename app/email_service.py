@@ -24,6 +24,8 @@ TEST_EMAIL_OTP_CODE = os.getenv("TEST_EMAIL_OTP_CODE", "654321")
 
 
 def generate_otp(length: int = 6) -> str:
+    if EMAIL_PROVIDER == "test":
+        return TEST_EMAIL_OTP_CODE
     return "".join(random.choices(string.digits, k=length))
 
 
