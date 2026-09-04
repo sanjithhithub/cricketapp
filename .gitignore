@@ -6,6 +6,7 @@ __pycache__/
 # Secrets - DO NOT COMMIT
 .env
 .env.*
+!.env.example
 firebase-service-account.json
 
 # Database
