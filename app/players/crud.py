@@ -4,8 +4,8 @@ from sqlalchemy import select, or_, func
 from app.players.models import Player
 from app.teams.models import PlayerTeamAssignment, Team
 from app.levels.models import TeamLevel
+from app.models import OTP, Country, State, City
 from app.players.schemas import PlayerCreate, PlayerUpdate, TeamAssignment
-from app.models import OTP
 from app.sms import send_otp
 
 MAX_SQUAD_SIZE = 15
@@ -256,3 +256,112 @@ async def remove_player_from_team(db: AsyncSession, player_id: int, team_id: int
     await db.delete(assignment)
     await db.commit()
     return True
+
+
+async def get_available_players_for_team(
+    db: AsyncSession, team_id: int, q: str | None = None, skip: int = 0, limit: int = 100
+):
+    team_result = await db.execute(select(Team).where(Team.id == team_id))
+    team = team_result.scalar_one_or_none()
+    if not team:
+        return None, "Team not found"
+
+    level_id = team.level_id
+
+    assigned_subq = (
+        select(PlayerTeamAssignment.player_id)
+        .where(PlayerTeamAssignment.level_id == level_id)
+        .distinct()
+        .scalar_subquery()
+    )
+
+    query = (
+        select(Player, Country.name, State.name, City.name)
+        .join(Country, Player.country_id == Country.id)
+        .join(State, Player.state_id == State.id)
+        .join(City, Player.city_id == City.id)
+        .where(Player.id.notin_(assigned_subq))
+    )
+
+    if q:
+        query = query.where(
+            or_(
+                Player.first_name.ilike(f"%{q}%"),
+                Player.last_name.ilike(f"%{q}%"),
+            )
+        )
+
+    query = query.offset(skip).limit(limit)
+    result = await db.execute(query)
+    rows = result.all()
+
+    players = []
+    for player, country_name, state_name, city_name in rows:
+        players.append({
+            "id": player.id,
+            "first_name": player.first_name,
+            "last_name": player.last_name,
+            "date_of_birth": player.date_of_birth,
+            "gender": player.gender,
+            "batting_hand": player.batting_hand,
+            "batting_position": player.batting_position,
+            "bowling_type": player.bowling_type,
+            "country_code": player.country_code,
+            "mobile_number": player.mobile_number,
+            "country_name": country_name,
+            "state_name": state_name,
+            "city_name": city_name,
+            "profile_image": player.profile_image,
+        })
+
+    return players, None
+
+
+async def assign_player_to_team_by_phone(
+    db: AsyncSession, team_id: int, country_code: str, mobile_number: int, role: str = "playing_11"
+):
+    team_result = await db.execute(select(Team).where(Team.id == team_id))
+    team = team_result.scalar_one_or_none()
+    if not team:
+        return None, "Team not found"
+
+    player = await get_player_by_phone(db, country_code, mobile_number)
+    if not player:
+        return None, "Player not found with this phone number"
+
+    level_result = await db.execute(select(TeamLevel).where(TeamLevel.id == team.level_id))
+    level = level_result.scalar_one_or_none()
+
+    existing = await db.execute(
+        select(PlayerTeamAssignment).where(
+            PlayerTeamAssignment.player_id == player.id,
+            PlayerTeamAssignment.level_id == team.level_id,
+        )
+    )
+    existing_assignment = existing.scalar_one_or_none()
+    if existing_assignment:
+        existing_team = await db.execute(select(Team).where(Team.id == existing_assignment.team_id))
+        existing_team_name = existing_team.scalar_one_or_none()
+        t_name = existing_team_name.name if existing_team_name else "another team"
+        return None, f"Player already has a team at '{level.name}' level: '{t_name}'"
+
+    squad_count = await db.execute(
+        select(func.count(PlayerTeamAssignment.player_id))
+        .where(
+            PlayerTeamAssignment.team_id == team_id,
+            PlayerTeamAssignment.level_id == team.level_id,
+        )
+    )
+    count = squad_count.scalar()
+    if count >= MAX_SQUAD_SIZE:
+        return None, f"Team squad is full (max {MAX_SQUAD_SIZE} players)"
+
+    assignment = PlayerTeamAssignment(
+        player_id=player.id,
+        team_id=team_id,
+        level_id=team.level_id,
+        role=role,
+    )
+    db.add(assignment)
+    await db.commit()
+    return assignment, None

@@ -5,12 +5,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.teams.schemas import (
     TeamCreate, TeamUpdate, TeamResponse, TeamPlayerAdd, PlayerOnTeam,
-    TeamPlayerAddById, TeamBulkPlayerAdd, TeamSquadResponse,
+    TeamPlayerAddById, TeamBulkPlayerAdd, TeamSquadResponse, TeamOption,
+    TeamDetailResponse,
 )
 from app.teams.crud import (
-    get_teams, get_team, get_team_squad, create_team, update_team,
-    replace_team, delete_team, update_team_logo,
+    get_teams, get_team, get_team_options, get_team_squad, create_team, update_team,
+    replace_team, delete_team, update_team_logo, get_team_detail,
 )
+from app.players.crud import get_available_players_for_team, assign_player_to_team_by_phone
+from app.players.schemas import PlayerDropdownItem, TeamPlayerByPhone
 
 router = APIRouter(tags=["teams"])
 UPLOAD_DIR = "uploads/teams"
@@ -26,6 +29,14 @@ async def list_teams(
     return await get_teams(db, skip=skip, limit=limit, level_id=level_id)
 
 
+@router.get("/teams/options", response_model=list[TeamOption])
+async def list_team_options(
+    level_id: int | None = Query(None, description="Filter by team level"),
+    db: AsyncSession = Depends(get_db),
+):
+    return await get_team_options(db, level_id=level_id)
+
+
 @router.post("/teams", response_model=TeamResponse, status_code=201)
 async def create_team_endpoint(
     data: TeamCreate,
@@ -34,12 +45,12 @@ async def create_team_endpoint(
     return await create_team(db, data)
 
 
-@router.get("/teams/{team_id}", response_model=TeamResponse)
+@router.get("/teams/{team_id}", response_model=TeamDetailResponse)
 async def get_team_endpoint(
     team_id: int,
     db: AsyncSession = Depends(get_db),
 ):
-    team = await get_team(db, team_id)
+    team = await get_team_detail(db, team_id)
     if not team:
         raise HTTPException(404, "Team not found")
     return team
@@ -109,3 +120,31 @@ async def upload_team_logo(
     if not team:
         raise HTTPException(404, "Team not found")
     return {"logo": file_path}
+
+
+@router.get("/teams/{team_id}/available-players", response_model=list[PlayerDropdownItem])
+async def get_available_players_endpoint(
+    team_id: int,
+    q: str | None = Query(None, description="Search by first or last name"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
+    players, error = await get_available_players_for_team(db, team_id, q=q, skip=skip, limit=limit)
+    if error:
+        raise HTTPException(404, error)
+    return players
+
+
+@router.post("/teams/{team_id}/players", status_code=201)
+async def add_player_to_team_by_phone_endpoint(
+    team_id: int,
+    data: TeamPlayerByPhone,
+    db: AsyncSession = Depends(get_db),
+):
+    assignment, error = await assign_player_to_team_by_phone(
+        db, team_id, data.country_code, data.mobile_number, data.role
+    )
+    if error:
+        raise HTTPException(400, error)
+    return {"message": "Player added to team successfully", "assignment": assignment}

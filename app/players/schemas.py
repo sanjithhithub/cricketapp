@@ -128,8 +128,8 @@ class TeamAssignment(BaseModel):
     @field_validator("role")
     @classmethod
     def validate_role(cls, v):
-        if v not in ("playing_11", "substitute"):
-            raise ValueError("role must be playing_11 or substitute")
+        if v not in ("playing_11", "substitute", "bench"):
+            raise ValueError("role must be playing_11, substitute, or bench")
         return v
 
 
@@ -139,8 +139,8 @@ class TeamAssignmentUpdate(BaseModel):
     @field_validator("role")
     @classmethod
     def validate_role(cls, v):
-        if v not in ("playing_11", "substitute"):
-            raise ValueError("role must be playing_11 or substitute")
+        if v not in ("playing_11", "substitute", "bench"):
+            raise ValueError("role must be playing_11, substitute, or bench")
         return v
 
 
@@ -153,3 +153,36 @@ class PlayerTeamInfo(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class PlayerDropdownItem(BaseModel):
+    id: int
+    first_name: str
+    last_name: str
+    date_of_birth: date
+    gender: str
+    batting_hand: str
+    batting_position: str
+    bowling_type: str
+    country_code: str
+    mobile_number: int
+    country_name: str | None = None
+    state_name: str | None = None
+    city_name: str | None = None
+    profile_image: str | None = None
+
+    class Config:
+        from_attributes = True
+
+
+class TeamPlayerByPhone(BaseModel):
+    country_code: str
+    mobile_number: int
+    role: str = "playing_11"
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v):
+        if v not in ("playing_11", "substitute"):
+            raise ValueError("role must be playing_11 or substitute")
+        return v

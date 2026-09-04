@@ -28,6 +28,8 @@ from app.database import Base
 from app.models import Country, State, City, Player, Team, OTP
 from app.levels.models import TeamLevel
 from app.teams.models import PlayerTeamAssignment
+from app.matches.models import Match
+from app.auth.models import User
 
 target_metadata = Base.metadata
 

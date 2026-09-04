@@ -18,11 +18,83 @@ async def get_teams(db: AsyncSession, skip: int = 0, limit: int = 100, level_id:
     return result.scalars().all()
 
 
+async def get_team_options(db: AsyncSession, level_id: int | None = None):
+    query = select(Team)
+    if level_id is not None:
+        query = query.where(Team.level_id == level_id)
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
 async def get_team(db: AsyncSession, team_id: int):
     result = await db.execute(
         select(Team).where(Team.id == team_id)
     )
     return result.scalar_one_or_none()
+
+
+async def get_team_detail(db: AsyncSession, team_id: int):
+    result = await db.execute(
+        select(Team)
+        .options(
+            selectinload(Team.level),
+            selectinload(Team.country),
+            selectinload(Team.state),
+            selectinload(Team.city),
+        )
+        .where(Team.id == team_id)
+    )
+    team = result.scalar_one_or_none()
+    if not team:
+        return None
+
+    assignments_result = await db.execute(
+        select(PlayerTeamAssignment)
+        .options(selectinload(PlayerTeamAssignment.player))
+        .where(PlayerTeamAssignment.team_id == team_id)
+    )
+    assignments = assignments_result.scalars().all()
+
+    playing_11 = []
+    substitutes = []
+    bench = []
+    for a in assignments:
+        player_data = SquadPlayer(
+            id=a.player.id,
+            first_name=a.player.first_name,
+            last_name=a.player.last_name,
+            profile_image=a.player.profile_image,
+            role=a.role,
+        )
+        if a.role == "playing_11":
+            playing_11.append(player_data)
+        elif a.role == "bench":
+            bench.append(player_data)
+        else:
+            substitutes.append(player_data)
+
+    return {
+        "id": team.id,
+        "name": team.name,
+        "short_name": team.short_name,
+        "logo": team.logo,
+        "homeground": team.homeground,
+        "founder": team.founder,
+        "founded_year": team.founded_year,
+        "owner": team.owner,
+        "country_id": team.country_id,
+        "state_id": team.state_id,
+        "city_id": team.city_id,
+        "level_id": team.level_id,
+        "country": team.country.name if team.country else None,
+        "state": team.state.name if team.state else None,
+        "city": team.city.name if team.city else None,
+        "level": team.level.name if team.level else None,
+        "total": len(assignments),
+        "playing_11": playing_11,
+        "substitutes": substitutes,
+        "bench": bench,
+    }
 
 
 async def get_team_squad(db: AsyncSession, team_id: int):
@@ -42,6 +114,7 @@ async def get_team_squad(db: AsyncSession, team_id: int):
 
     playing_11 = []
     substitutes = []
+    bench = []
     for a in assignments:
         player_data = SquadPlayer(
             id=a.player.id,
@@ -52,16 +125,19 @@ async def get_team_squad(db: AsyncSession, team_id: int):
         )
         if a.role == "playing_11":
             playing_11.append(player_data)
+        elif a.role == "bench":
+            bench.append(player_data)
         else:
             substitutes.append(player_data)
 
     return {
         "team_id": team.id,
         "team_name": team.name,
-        "level": team.level.name,
+        "level": team.level.name if team.level else "",
         "total": len(assignments),
         "playing_11": playing_11,
         "substitutes": substitutes,
+        "bench": bench,
     }
 
 
@@ -71,6 +147,35 @@ async def get_team_squad_count(db: AsyncSession, team_id: int):
         .where(PlayerTeamAssignment.team_id == team_id)
     )
     return result.scalar()
+
+
+async def _load_team_players(db: AsyncSession, team_id: int):
+    assignments_result = await db.execute(
+        select(PlayerTeamAssignment)
+        .options(selectinload(PlayerTeamAssignment.player))
+        .where(PlayerTeamAssignment.team_id == team_id)
+    )
+    assignments = assignments_result.scalars().all()
+
+    playing_11 = []
+    substitutes = []
+    bench = []
+    for a in assignments:
+        player_data = SquadPlayer(
+            id=a.player.id,
+            first_name=a.player.first_name,
+            last_name=a.player.last_name,
+            profile_image=a.player.profile_image,
+            role=a.role,
+        )
+        if a.role == "playing_11":
+            playing_11.append(player_data)
+        elif a.role == "bench":
+            bench.append(player_data)
+        else:
+            substitutes.append(player_data)
+
+    return assignments, playing_11, substitutes, bench
 
 
 async def create_team(db: AsyncSession, data: TeamCreate):

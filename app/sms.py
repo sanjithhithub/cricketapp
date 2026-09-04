@@ -40,8 +40,8 @@ async def send_otp(country_code: str, mobile_number: int) -> tuple[bool, str | N
     if SMS_PROVIDER == "2factor":
         return await _send_2factor_otp(country_code, mobile_number)
 
-    from app.firebase import send_firebase_otp
-    return await send_firebase_otp(country_code, mobile_number)
+    logger.error("Unknown SMS_PROVIDER: %s", SMS_PROVIDER)
+    return False, None
 
 
 async def verify_otp(session_info: str, code: str) -> bool:
@@ -59,8 +59,8 @@ async def verify_otp(session_info: str, code: str) -> bool:
     if SMS_PROVIDER == "2factor":
         return await _verify_2factor_otp(session_info, code)
 
-    from app.firebase import verify_firebase_otp
-    return await verify_firebase_otp(session_info, code)
+    logger.error("Unknown SMS_PROVIDER: %s", SMS_PROVIDER)
+    return False
 
 
 async def _send_msg91_otp(country_code: str, mobile_number: int) -> tuple[bool, str | None]:

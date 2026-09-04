@@ -54,6 +54,16 @@ class TeamResponse(TeamBase):
         from_attributes = True
 
 
+class TeamOption(BaseModel):
+    id: int
+    name: str
+    short_name: str
+    logo: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 class TeamPlayerAdd(BaseModel):
     country_code: str
     mobile_number: int
@@ -85,3 +95,19 @@ class TeamSquadResponse(BaseModel):
     total: int
     playing_11: list[SquadPlayer]
     substitutes: list[SquadPlayer]
+    bench: list[SquadPlayer] = []
+
+
+class TeamDetailResponse(TeamBase):
+    id: int
+    country: Optional[str] = None
+    state: Optional[str] = None
+    city: Optional[str] = None
+    level: Optional[str] = None
+    total: int = 0
+    playing_11: list[SquadPlayer] = []
+    substitutes: list[SquadPlayer] = []
+    bench: list[SquadPlayer] = []
+
+    class Config:
+        from_attributes = True

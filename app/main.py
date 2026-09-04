@@ -20,8 +20,12 @@ from app.crud import (
 from app.players.routes import router as players_router
 from app.teams.routes import router as teams_router
 from app.levels.routes import router as levels_router
+from app.matches.routes import router as matches_router
 from app.players.crud import mark_player_phone_verified
-from app.seed import seed_locations
+from app.seed import seed_locations, seed_levels
+from app.auth.routes import router as auth_router
+from app.auth.security import get_current_user
+from app.auth.models import User
 
 app = FastAPI(title="CricketApp", version="1.0.0")
 
@@ -35,9 +39,11 @@ app.add_middleware(
 
 API_V1_PREFIX = "/v1"
 
-app.include_router(players_router, prefix=API_V1_PREFIX)
-app.include_router(teams_router, prefix=API_V1_PREFIX)
-app.include_router(levels_router, prefix=API_V1_PREFIX)
+app.include_router(auth_router, prefix=API_V1_PREFIX)
+app.include_router(players_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
+app.include_router(teams_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
+app.include_router(levels_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
+app.include_router(matches_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
@@ -47,6 +53,7 @@ async def startup():
         await conn.run_sync(Base.metadata.create_all)
     async for db in get_db():
         await seed_locations(db)
+        await seed_levels(db)
         break
 
 
@@ -61,12 +68,17 @@ async def health():
 
 
 @app.get("/v1/locations", response_model=list[CountryOut])
-async def list_locations(db: AsyncSession = Depends(get_db)):
+async def list_locations(
+    db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
     return await get_all_countries(db)
 
 
 @app.get("/v1/country-codes", response_model=list[CountryCodeOut])
-async def list_country_codes():
+async def list_country_codes(
+    _: User = Depends(get_current_user),
+):
     return await get_country_codes()
 
 
@@ -74,6 +86,7 @@ async def list_country_codes():
 async def verify_otp(
     data: OTPVerifyRequest,
     db: AsyncSession = Depends(get_db),
+    _: User = Depends(get_current_user),
 ):
     valid = await verify_otp_code(db, data.country_code, data.mobile_number, data.otp_code)
     if not valid:

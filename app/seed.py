@@ -1,5 +1,66 @@
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, func
 from app.models import Country, State, City
+from app.levels.models import TeamLevel
+
+
+TEAM_LEVELS = [
+    # International
+    "Test Cricket",
+    "International ODI",
+    "International T20I",
+    "World Cup",
+    "T20 World Cup",
+    # Franchise T20 leagues
+    "IPL",
+    "BBL",
+    "CPL",
+    "PSL",
+    "SA20",
+    "The Hundred",
+    "T10 League",
+    # Age-group
+    "U19",
+    "U17",
+    "U16",
+    "U15",
+    "U14",
+    "U13",
+    "U12",
+    "U11",
+    # Domestic first-class / List A / T20
+    "Ranji Trophy",
+    "Syed Mushtaq Ali Trophy",
+    "Vijay Hazare Trophy",
+    "Duleep Trophy",
+    "Irani Cup",
+    "Deodhar Trophy",
+    "State League",
+    "District League",
+    "T20 Domestic",
+    "ODI Domestic",
+    "County Championship",
+    "Sheffield Shield",
+    # School / College
+    "School Level",
+    "College Level",
+    "University Level",
+]
+
+
+async def seed_levels(db: AsyncSession):
+    result = await db.execute(select(TeamLevel.name))
+    existing = {name for (name,) in result.all()}
+
+    added = 0
+    for name in TEAM_LEVELS:
+        if name not in existing:
+            db.add(TeamLevel(name=name))
+            added += 1
+
+    if added:
+        await db.commit()
+    return added
 
 
 LOCATIONS = {
