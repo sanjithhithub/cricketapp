@@ -69,6 +69,26 @@ async def _get_latest_otp_by_id(db: AsyncSession, otp_id: int) -> AuthOTP | None
     return result.scalar_one_or_none()
 
 
+async def _get_latest_verified_otp(
+    db: AsyncSession,
+    purpose: str,
+    email: str,
+) -> AuthOTP | None:
+    query = (
+        select(AuthOTP)
+        .where(
+            AuthOTP.purpose == purpose,
+            AuthOTP.email == email.lower(),
+            AuthOTP.expires_at > datetime.utcnow(),
+            AuthOTP.is_verified == True,
+        )
+        .order_by(AuthOTP.created_at.desc())
+        .limit(1)
+    )
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
 async def send_register_otp(db: AsyncSession, email: str):
     email = email.lower()
     existing = await get_user_by_email(db, email)
@@ -208,8 +228,8 @@ async def register_user(db: AsyncSession, data: UserRegister) -> User:
             detail="An account with this email already exists",
         )
 
-    otp = await _get_latest_otp(db, "register", email=email)
-    if not otp or not otp.is_verified:
+    otp = await _get_latest_verified_otp(db, "register", email)
+    if not otp:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email is not verified. Please verify your OTP first.",
