@@ -5,6 +5,8 @@ services:
     container_name: cricketapp
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@cricketdb:5432/moviedb
     depends_on:
