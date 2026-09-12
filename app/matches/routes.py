@@ -1,8 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.database import get_db
-from app.matches.schemas import MatchCreate, MatchUpdate, MatchResponse
-from app.matches.crud import get_matches, get_match, create_match, update_match, replace_match, delete_match
+from app.matches.crud import (
+    create_match,
+    delete_match,
+    get_match,
+    get_matches,
+    replace_match,
+    update_match,
+)
+from app.matches.schemas import MatchCreate, MatchResponse, MatchUpdate
 
 router = APIRouter(tags=["matches"])
 

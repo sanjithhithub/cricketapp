@@ -1,29 +1,29 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.database import get_db
+from app.players.crud import (
+    assign_player_to_team,
+    create_player,
+    delete_player,
+    get_player,
+    get_player_teams,
+    get_players,
+    remove_player_from_team,
+    replace_player,
+    resend_otp_for_player,
+    search_players,
+    update_player,
+    update_player_team_role,
+)
 from app.players.schemas import (
     PlayerCreate,
-    PlayerUpdate,
-    PlayerResponse,
     PlayerCreateResponse,
+    PlayerResponse,
+    PlayerUpdate,
     ResendOTPResponse,
     TeamAssignment,
     TeamAssignmentUpdate,
-    PlayerTeamInfo,
-)
-from app.players.crud import (
-    get_players,
-    get_player,
-    create_player,
-    update_player,
-    replace_player,
-    delete_player,
-    resend_otp_for_player,
-    search_players,
-    assign_player_to_team,
-    get_player_teams,
-    update_player_team_role,
-    remove_player_from_team,
 )
 
 router = APIRouter(tags=["players"])
@@ -54,17 +54,20 @@ async def create_player_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        player, otp_sent = await create_player(db, data)
+        player, otp_sent, team_assignment = await create_player(db, data)
     except ValueError as e:
         raise HTTPException(409, str(e))
     return PlayerCreateResponse(
         **player.__dict__,
         message=(
-            "Player created. OTP sent to mobile number via SMS."
+            "Player created and team assigned. OTP sent to mobile number via SMS."
+            if otp_sent and data.team_id is not None
+            else "Player created. OTP sent to mobile number via SMS."
             if otp_sent
-            else "Player created but OTP SMS could not be sent. Please check the SMS service configuration."
+            else "Player created. OTP SMS could not be sent. Please check the SMS service configuration."
         ),
         otp_sent=otp_sent,
+        team_assignment=team_assignment,
     )
 
 

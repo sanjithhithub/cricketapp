@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Optional
+
 from pydantic import BaseModel, field_validator
 
 
@@ -8,14 +8,14 @@ class MatchBase(BaseModel):
     match_time: str
     venue: str
     match_type: str
-    result: Optional[str] = None
+    result: str | None = None
     team_a_id: int
     team_b_id: int
     toss_winner_id: int
     toss_decision: str
-    referee_1_name: Optional[str] = None
-    referee_2_name: Optional[str] = None
-    match_referee_name: Optional[str] = None
+    referee_1_name: str | None = None
+    referee_2_name: str | None = None
+    match_referee_name: str | None = None
 
     @field_validator("match_type")
     @classmethod
@@ -37,18 +37,18 @@ class MatchCreate(MatchBase):
 
 
 class MatchUpdate(BaseModel):
-    match_date: Optional[date] = None
-    match_time: Optional[str] = None
-    venue: Optional[str] = None
-    match_type: Optional[str] = None
-    result: Optional[str] = None
-    team_a_id: Optional[int] = None
-    team_b_id: Optional[int] = None
-    toss_winner_id: Optional[int] = None
-    toss_decision: Optional[str] = None
-    referee_1_name: Optional[str] = None
-    referee_2_name: Optional[str] = None
-    match_referee_name: Optional[str] = None
+    match_date: date | None = None
+    match_time: str | None = None
+    venue: str | None = None
+    match_type: str | None = None
+    result: str | None = None
+    team_a_id: int | None = None
+    team_b_id: int | None = None
+    toss_winner_id: int | None = None
+    toss_decision: str | None = None
+    referee_1_name: str | None = None
+    referee_2_name: str | None = None
+    match_referee_name: str | None = None
 
     @field_validator("match_type")
     @classmethod

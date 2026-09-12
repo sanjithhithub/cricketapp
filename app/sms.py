@@ -1,13 +1,13 @@
-import os
 import logging
+import os
 import random
 import string
 
-from dotenv import load_dotenv
-load_dotenv()
-
 import httpx
+from dotenv import load_dotenv
 from twilio.rest import Client as TwilioClient
+
+load_dotenv()
 
 logger = logging.getLogger("app.sms")
 

@@ -1,31 +1,30 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.database import get_db, engine, Base
-from app.models import Country, State, City
-from app.schemas import (
-    CountryOut,
-    StateOut,
-    LocationOut,
-    CountryCodeOut,
-    OTPVerifyRequest,
-    OTPVerifyResponse,
-)
+
+from app.auth.models import User
+from app.auth.routes import router as auth_router
+from app.auth.security import get_current_user
 from app.crud import (
     get_all_countries,
     get_country_codes,
     verify_otp_code,
 )
-from app.players.routes import router as players_router
-from app.teams.routes import router as teams_router
+from app.database import Base, engine, get_db
 from app.levels.routes import router as levels_router
 from app.matches.routes import router as matches_router
 from app.players.crud import mark_player_phone_verified
-from app.seed import seed_locations, seed_levels
-from app.auth.routes import router as auth_router
-from app.auth.security import get_current_user
-from app.auth.models import User
+from app.players.routes import router as players_router
+from app.schemas import (
+    CountryCodeOut,
+    CountryOut,
+    OTPVerifyRequest,
+    OTPVerifyResponse,
+)
+from app.scoring.routes import router as scoring_router
+from app.seed import seed_levels, seed_locations
+from app.teams.routes import router as teams_router
 
 app = FastAPI(title="CricketApp", version="1.0.0")
 
@@ -44,6 +43,7 @@ app.include_router(players_router, prefix=API_V1_PREFIX, dependencies=[Depends(g
 app.include_router(teams_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
 app.include_router(levels_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
 app.include_router(matches_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
+app.include_router(scoring_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
@@ -93,6 +93,3 @@ async def verify_otp(
         raise HTTPException(400, "Invalid or expired OTP")
     await mark_player_phone_verified(db, data.country_code, data.mobile_number)
     return OTPVerifyResponse(message="Phone number verified successfully", verified=True)
-
-
-

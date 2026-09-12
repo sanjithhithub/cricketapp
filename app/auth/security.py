@@ -1,17 +1,16 @@
 import os
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 import jwt
-from passlib.hash import pbkdf2_sha256
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from passlib.hash import pbkdf2_sha256
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
 from app.auth.models import User
+from app.database import get_db
 
 load_dotenv()
 
@@ -33,9 +32,9 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         return False
 
 
-def create_access_token(subject: str, expires_minutes: Optional[int] = None) -> str:
+def create_access_token(subject: str, expires_minutes: int | None = None) -> str:
     expire = expires_minutes or ACCESS_TOKEN_EXPIRE_MINUTES
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload = {
         "sub": str(subject),
         "iat": now,
@@ -49,7 +48,7 @@ def decode_token(token: str) -> dict:
 
 
 async def get_current_user(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
     db: AsyncSession = Depends(get_db),
 ) -> User:
     if credentials is None:

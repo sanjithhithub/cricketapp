@@ -1,9 +1,11 @@
-from logging.config import fileConfig
-from sqlalchemy import engine_from_config, pool
-from alembic import context
-from dotenv import load_dotenv
 import os
 import re
+from logging.config import fileConfig
+
+from dotenv import load_dotenv
+from sqlalchemy import engine_from_config, pool
+
+from alembic import context
 
 load_dotenv()
 
@@ -24,12 +26,8 @@ sync_url = re.sub(r"\+asyncpg", "+psycopg2", db_url)
 sync_url = re.sub(r"\+aiosqlite", "", sync_url)
 config.set_main_option("sqlalchemy.url", sync_url)
 
+import app.scoring.models  # noqa: F401
 from app.database import Base
-from app.models import Country, State, City, Player, Team, OTP
-from app.levels.models import TeamLevel
-from app.teams.models import PlayerTeamAssignment
-from app.matches.models import Match
-from app.auth.models import User
 
 target_metadata = Base.metadata
 

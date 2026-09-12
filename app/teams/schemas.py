@@ -1,11 +1,10 @@
 from pydantic import BaseModel
-from typing import Optional
 
 
 class TeamBase(BaseModel):
     name: str
     short_name: str
-    logo: Optional[str] = None
+    logo: str | None = None
     homeground: str
     founder: str
     founded_year: int
@@ -21,24 +20,24 @@ class TeamCreate(TeamBase):
 
 
 class TeamUpdate(BaseModel):
-    name: Optional[str] = None
-    short_name: Optional[str] = None
-    logo: Optional[str] = None
-    homeground: Optional[str] = None
-    founder: Optional[str] = None
-    founded_year: Optional[int] = None
-    owner: Optional[str] = None
-    country_id: Optional[int] = None
-    state_id: Optional[int] = None
-    city_id: Optional[int] = None
-    level_id: Optional[int] = None
+    name: str | None = None
+    short_name: str | None = None
+    logo: str | None = None
+    homeground: str | None = None
+    founder: str | None = None
+    founded_year: int | None = None
+    owner: str | None = None
+    country_id: int | None = None
+    state_id: int | None = None
+    city_id: int | None = None
+    level_id: int | None = None
 
 
 class PlayerOnTeam(BaseModel):
     id: int
     first_name: str
     last_name: str
-    profile_image: Optional[str] = None
+    profile_image: str | None = None
     country_code: str
     mobile_number: int
     email: str
@@ -58,7 +57,7 @@ class TeamOption(BaseModel):
     id: int
     name: str
     short_name: str
-    logo: Optional[str] = None
+    logo: str | None = None
 
     class Config:
         from_attributes = True
@@ -81,7 +80,7 @@ class SquadPlayer(BaseModel):
     id: int
     first_name: str
     last_name: str
-    profile_image: Optional[str] = None
+    profile_image: str | None = None
     role: str
 
     class Config:
@@ -100,10 +99,10 @@ class TeamSquadResponse(BaseModel):
 
 class TeamDetailResponse(TeamBase):
     id: int
-    country: Optional[str] = None
-    state: Optional[str] = None
-    city: Optional[str] = None
-    level: Optional[str] = None
+    country: str | None = None
+    state: str | None = None
+    city: str | None = None
+    level: str | None = None
     total: int = 0
     playing_11: list[SquadPlayer] = []
     substitutes: list[SquadPlayer] = []

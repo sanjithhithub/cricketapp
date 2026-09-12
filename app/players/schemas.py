@@ -1,6 +1,6 @@
-from pydantic import BaseModel, field_validator
 from datetime import date
-from typing import Optional
+
+from pydantic import BaseModel, field_validator
 
 
 class PlayerBase(BaseModel):
@@ -8,7 +8,7 @@ class PlayerBase(BaseModel):
     last_name: str
     date_of_birth: date
     gender: str
-    profile_image: Optional[str] = None
+    profile_image: str | None = None
     batting_hand: str
     batting_position: str
     bowling_hand: str
@@ -33,8 +33,10 @@ class PlayerBase(BaseModel):
     @classmethod
     def validate_batting_hand(cls, v):
         mapping = {
-            "left": "Left", "right": "Right",
-            "l": "Left", "r": "Right",
+            "left": "Left",
+            "right": "Right",
+            "l": "Left",
+            "r": "Right",
         }
         if v.lower() in mapping:
             return mapping[v.lower()]
@@ -44,22 +46,30 @@ class PlayerBase(BaseModel):
     @classmethod
     def validate_batting_position(cls, v):
         mapping = {
-            "opening": "Opening", "op": "Opening",
-            "middle": "Middle Order", "mid": "Middle Order",
-            "tail": "Tail Ender", "wk": "Wicket Keeper",
+            "opening": "Opening",
+            "op": "Opening",
+            "middle": "Middle Order",
+            "mid": "Middle Order",
+            "tail": "Tail Ender",
+            "wk": "Wicket Keeper",
             "wicket keeper": "Wicket Keeper",
-            "tail ender": "Tail Ender", "middle order": "Middle Order",
+            "tail ender": "Tail Ender",
+            "middle order": "Middle Order",
         }
         if v.lower() in mapping:
             return mapping[v.lower()]
-        raise ValueError("batting_position must be Opening, Middle Order, Tail Ender, or Wicket Keeper")
+        raise ValueError(
+            "batting_position must be Opening, Middle Order, Tail Ender, or Wicket Keeper"
+        )
 
     @field_validator("bowling_hand")
     @classmethod
     def validate_bowling_hand(cls, v):
         mapping = {
-            "left": "Left", "right": "Right",
-            "l": "Left", "r": "Right",
+            "left": "Left",
+            "right": "Right",
+            "l": "Left",
+            "r": "Right",
         }
         if v.lower() in mapping:
             return mapping[v.lower()]
@@ -70,7 +80,9 @@ class PlayerBase(BaseModel):
     def validate_bowling_type(cls, v):
         mapping = {
             "fast": "Fast",
-            "medium fast": "Medium Fast", "mfast": "Medium Fast", "medium": "Medium Fast",
+            "medium fast": "Medium Fast",
+            "mfast": "Medium Fast",
+            "medium": "Medium Fast",
             "spin": "Spin",
         }
         if v.lower() in mapping:
@@ -79,27 +91,35 @@ class PlayerBase(BaseModel):
 
 
 class PlayerCreate(PlayerBase):
-    pass
+    team_id: int | None = None
+    role: str = "playing_11"
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v):
+        if v not in ("playing_11", "substitute", "bench"):
+            raise ValueError("role must be playing_11, substitute, or bench")
+        return v
 
 
 class PlayerUpdate(BaseModel):
-    first_name: Optional[str] = None
-    last_name: Optional[str] = None
-    date_of_birth: Optional[date] = None
-    gender: Optional[str] = None
-    profile_image: Optional[str] = None
-    batting_hand: Optional[str] = None
-    batting_position: Optional[str] = None
-    bowling_hand: Optional[str] = None
-    bowling_type: Optional[str] = None
-    country_id: Optional[int] = None
-    state_id: Optional[int] = None
-    city_id: Optional[int] = None
-    height: Optional[float] = None
-    weight: Optional[float] = None
-    country_code: Optional[str] = None
-    mobile_number: Optional[int] = None
-    email: Optional[str] = None
+    first_name: str | None = None
+    last_name: str | None = None
+    date_of_birth: date | None = None
+    gender: str | None = None
+    profile_image: str | None = None
+    batting_hand: str | None = None
+    batting_position: str | None = None
+    bowling_hand: str | None = None
+    bowling_type: str | None = None
+    country_id: int | None = None
+    state_id: int | None = None
+    city_id: int | None = None
+    height: float | None = None
+    weight: float | None = None
+    country_code: str | None = None
+    mobile_number: int | None = None
+    email: str | None = None
 
 
 class PlayerResponse(PlayerBase):
@@ -110,9 +130,21 @@ class PlayerResponse(PlayerBase):
         from_attributes = True
 
 
+class PlayerTeamInfo(BaseModel):
+    team_id: int
+    team_name: str
+    level_id: int
+    level_name: str
+    role: str
+
+    class Config:
+        from_attributes = True
+
+
 class PlayerCreateResponse(PlayerResponse):
     message: str
     otp_sent: bool
+    team_assignment: PlayerTeamInfo | None = None
 
 
 class ResendOTPResponse(BaseModel):
@@ -142,17 +174,6 @@ class TeamAssignmentUpdate(BaseModel):
         if v not in ("playing_11", "substitute", "bench"):
             raise ValueError("role must be playing_11, substitute, or bench")
         return v
-
-
-class PlayerTeamInfo(BaseModel):
-    team_id: int
-    team_name: str
-    level_id: int
-    level_name: str
-    role: str
-
-    class Config:
-        from_attributes = True
 
 
 class PlayerDropdownItem(BaseModel):

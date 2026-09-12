@@ -1,14 +1,28 @@
+from __future__ import annotations
+
 from datetime import date
-from sqlalchemy import String, Integer, Float, Date, ForeignKey, BigInteger, Boolean, UniqueConstraint
+from typing import TYPE_CHECKING
+
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Date,
+    Float,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.teams.models import PlayerTeamAssignment
 
 
 class Player(Base):
     __tablename__ = "players"
-    __table_args__ = (
-        UniqueConstraint("country_code", "mobile_number", name="uq_player_phone"),
-    )
+    __table_args__ = (UniqueConstraint("country_code", "mobile_number", name="uq_player_phone"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     first_name: Mapped[str] = mapped_column(String(50))
@@ -30,4 +44,4 @@ class Player(Base):
     email: Mapped[str] = mapped_column(String(100), unique=True)
     is_phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    assignments: Mapped[list["PlayerTeamAssignment"]] = relationship(back_populates="player")
+    assignments: Mapped[list[PlayerTeamAssignment]] = relationship(back_populates="player")

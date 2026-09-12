@@ -1,13 +1,16 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
 from app.matches.models import Match
 from app.matches.schemas import MatchCreate, MatchUpdate
 from app.teams.models import Team
 
 
 async def _validate_teams(db: AsyncSession, team_a_id: int, team_b_id: int, toss_winner_id: int):
-    result = await db.execute(select(Team).where(Team.id.in_([team_a_id, team_b_id, toss_winner_id])))
+    result = await db.execute(
+        select(Team).where(Team.id.in_([team_a_id, team_b_id, toss_winner_id]))
+    )
     teams = {t.id: t for t in result.scalars().all()}
     errors = []
     if team_a_id not in teams:
@@ -26,7 +29,9 @@ async def _validate_teams(db: AsyncSession, team_a_id: int, team_b_id: int, toss
 async def get_matches(db: AsyncSession, skip: int = 0, limit: int = 100):
     result = await db.execute(
         select(Match)
-        .options(selectinload(Match.team_a), selectinload(Match.team_b), selectinload(Match.toss_winner))
+        .options(
+            selectinload(Match.team_a), selectinload(Match.team_b), selectinload(Match.toss_winner)
+        )
         .offset(skip)
         .limit(limit)
     )
@@ -36,7 +41,9 @@ async def get_matches(db: AsyncSession, skip: int = 0, limit: int = 100):
 async def get_match(db: AsyncSession, match_id: int):
     result = await db.execute(
         select(Match)
-        .options(selectinload(Match.team_a), selectinload(Match.team_b), selectinload(Match.toss_winner))
+        .options(
+            selectinload(Match.team_a), selectinload(Match.team_b), selectinload(Match.toss_winner)
+        )
         .where(Match.id == match_id)
     )
     return result.scalar_one_or_none()

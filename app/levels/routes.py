@@ -1,8 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.database import get_db
+from app.levels.crud import create_level, delete_level, get_level, get_levels
 from app.levels.schemas import LevelCreate, LevelResponse
-from app.levels.crud import get_levels, get_level, create_level, delete_level
 
 router = APIRouter(tags=["levels"])
 

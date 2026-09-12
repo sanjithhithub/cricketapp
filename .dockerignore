@@ -3,3 +3,13 @@ __pycache__
 .env
 .git
 .gitignore
+tests/
+.pytest_cache/
+cricket.db
+*.sqlite3
+*.log
+uploads/
+firebase-service-account.json
+server_output.log
+server_error.log
+deploy.sh

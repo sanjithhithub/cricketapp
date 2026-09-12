@@ -1,10 +1,9 @@
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 from sqlalchemy.orm import selectinload
-from app.teams.models import Team, PlayerTeamAssignment
-from app.players.models import Player
-from app.teams.schemas import TeamCreate, TeamUpdate, SquadPlayer
 
+from app.teams.models import PlayerTeamAssignment, Team
+from app.teams.schemas import SquadPlayer, TeamCreate, TeamUpdate
 
 MAX_SQUAD_SIZE = 15
 
@@ -27,9 +26,7 @@ async def get_team_options(db: AsyncSession, level_id: int | None = None):
 
 
 async def get_team(db: AsyncSession, team_id: int):
-    result = await db.execute(
-        select(Team).where(Team.id == team_id)
-    )
+    result = await db.execute(select(Team).where(Team.id == team_id))
     return result.scalar_one_or_none()
 
 
@@ -143,8 +140,9 @@ async def get_team_squad(db: AsyncSession, team_id: int):
 
 async def get_team_squad_count(db: AsyncSession, team_id: int):
     result = await db.execute(
-        select(func.count(PlayerTeamAssignment.player_id))
-        .where(PlayerTeamAssignment.team_id == team_id)
+        select(func.count(PlayerTeamAssignment.player_id)).where(
+            PlayerTeamAssignment.team_id == team_id
+        )
     )
     return result.scalar()
 

@@ -1,36 +1,36 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.auth.crud import (
+    authenticate_user,
+    login_or_create_google_user,
+    register_user,
+    reset_password,
+    send_forgot_password_otp,
+    send_register_otp,
+    verify_forgot_password_otp,
+    verify_google_id_token,
+    verify_register_otp,
+)
 from app.auth.models import User
 from app.auth.schemas import (
-    UserRegister,
-    UserLogin,
-    GoogleAuthRequest,
-    LoginResponse,
-    UserOut,
-    RegisterSendOTPRequest,
-    RegisterVerifyOTPRequest,
+    ForgotPasswordResetRequest,
     ForgotPasswordSendOTPRequest,
     ForgotPasswordVerifyOTPRequest,
-    ForgotPasswordResetRequest,
+    ForgotPasswordVerifyResponse,
+    GoogleAuthRequest,
+    LoginResponse,
     OTPResponse,
     OTPVerifyResponse,
-    ForgotPasswordVerifyResponse,
     PasswordResetResponse,
+    RegisterSendOTPRequest,
+    RegisterVerifyOTPRequest,
+    UserLogin,
+    UserOut,
+    UserRegister,
 )
-from app.auth.crud import (
-    register_user,
-    authenticate_user,
-    verify_google_id_token,
-    login_or_create_google_user,
-    send_register_otp,
-    verify_register_otp,
-    send_forgot_password_otp,
-    verify_forgot_password_otp,
-    reset_password,
-)
-from app.auth.security import create_access_token, get_current_user, ACCESS_TOKEN_EXPIRE_MINUTES
+from app.auth.security import ACCESS_TOKEN_EXPIRE_MINUTES, create_access_token, get_current_user
+from app.database import get_db
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 

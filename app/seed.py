@@ -1,8 +1,8 @@
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from app.models import Country, State, City
-from app.levels.models import TeamLevel
 
+from app.levels.models import TeamLevel
+from app.models import City, Country, State
 
 TEAM_LEVELS = [
     # International
@@ -145,10 +145,34 @@ LOCATIONS = {
         "Valencia": ["Valencia City", "Alicante", "Elche", "Castellón", "Torrevieja"],
     },
     "Brazil": {
-        "São Paulo": ["São Paulo City", "Campinas", "Santos", "São José dos Campos", "Ribeirão Preto"],
-        "Rio de Janeiro": ["Rio de Janeiro City", "Niterói", "Duque de Caxias", "Nova Iguaçu", "Petrópolis"],
-        "Minas Gerais": ["Belo Horizonte", "Uberlândia", "Juiz de Fora", "Montes Claros", "Divinópolis"],
-        "Bahia": ["Salvador", "Feira de Santana", "Vitória da Conquista", "Ilhéus", "Lauro de Freitas"],
+        "São Paulo": [
+            "São Paulo City",
+            "Campinas",
+            "Santos",
+            "São José dos Campos",
+            "Ribeirão Preto",
+        ],
+        "Rio de Janeiro": [
+            "Rio de Janeiro City",
+            "Niterói",
+            "Duque de Caxias",
+            "Nova Iguaçu",
+            "Petrópolis",
+        ],
+        "Minas Gerais": [
+            "Belo Horizonte",
+            "Uberlândia",
+            "Juiz de Fora",
+            "Montes Claros",
+            "Divinópolis",
+        ],
+        "Bahia": [
+            "Salvador",
+            "Feira de Santana",
+            "Vitória da Conquista",
+            "Ilhéus",
+            "Lauro de Freitas",
+        ],
     },
     "South Africa": {
         "Gauteng": ["Johannesburg", "Pretoria", "Soweto", "Benoni"],
@@ -197,7 +221,13 @@ LOCATIONS = {
         "Eastern Province": ["Dammam", "Dhahran", "Al Khobar", "Al Ahsa", "Jubail"],
     },
     "Indonesia": {
-        "Jakarta": ["Jakarta City", "Jakarta Selatan", "Jakarta Timur", "Jakarta Barat", "Jakarta Utara"],
+        "Jakarta": [
+            "Jakarta City",
+            "Jakarta Selatan",
+            "Jakarta Timur",
+            "Jakarta Barat",
+            "Jakarta Utara",
+        ],
         "West Java": ["Bandung", "Bekasi", "Bogor", "Depok", "Cimahi"],
         "East Java": ["Surabaya", "Malang", "Kediri", "Madiun", "Blitar"],
         "Central Java": ["Semarang", "Solo", "Magelang", "Pekalongan", "Salatiga"],
@@ -240,7 +270,7 @@ LOCATIONS = {
 
 
 async def seed_locations(db: AsyncSession):
-    from sqlalchemy import select, func
+    from sqlalchemy import select
 
     result = await db.execute(select(func.count(Country.id)))
     count = result.scalar()

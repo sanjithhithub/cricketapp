@@ -1,19 +1,30 @@
 import os
 import shutil
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.database import get_db
-from app.teams.schemas import (
-    TeamCreate, TeamUpdate, TeamResponse, TeamPlayerAdd, PlayerOnTeam,
-    TeamPlayerAddById, TeamBulkPlayerAdd, TeamSquadResponse, TeamOption,
-    TeamDetailResponse,
-)
-from app.teams.crud import (
-    get_teams, get_team, get_team_options, get_team_squad, create_team, update_team,
-    replace_team, delete_team, update_team_logo, get_team_detail,
-)
-from app.players.crud import get_available_players_for_team, assign_player_to_team_by_phone
+from app.players.crud import assign_player_to_team_by_phone, get_available_players_for_team
 from app.players.schemas import PlayerDropdownItem, TeamPlayerByPhone
+from app.teams.crud import (
+    create_team,
+    delete_team,
+    get_team_detail,
+    get_team_options,
+    get_team_squad,
+    get_teams,
+    replace_team,
+    update_team,
+    update_team_logo,
+)
+from app.teams.schemas import (
+    TeamCreate,
+    TeamDetailResponse,
+    TeamOption,
+    TeamResponse,
+    TeamUpdate,
+)
 
 router = APIRouter(tags=["teams"])
 UPLOAD_DIR = "uploads/teams"

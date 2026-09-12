@@ -1,11 +1,9 @@
 from datetime import datetime
-from sqlalchemy import String, ForeignKey, BigInteger, DateTime, Boolean
+
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.database import Base
-from app.players.models import Player
-from app.teams.models import Team
-from app.levels.models import TeamLevel
-from app.teams.models import PlayerTeamAssignment
 
 
 class Country(Base):

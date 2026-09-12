@@ -1,5 +1,5 @@
-import os
 import logging
+import os
 import random
 import smtplib
 import string
@@ -32,9 +32,7 @@ def generate_otp(length: int = 6) -> str:
 async def send_email_otp(to_email: str, otp_code: str) -> tuple[bool, str | None]:
     """Send an OTP email. Returns (success, error_message)."""
     if EMAIL_PROVIDER == "test":
-        logger.info(
-            "TEST MODE: email OTP for %s is %s", to_email, TEST_EMAIL_OTP_CODE
-        )
+        logger.info("TEST MODE: email OTP for %s is %s", to_email, TEST_EMAIL_OTP_CODE)
         return True, None
 
     if EMAIL_PROVIDER in ("smtp", "email"):

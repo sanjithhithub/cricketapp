@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -7,9 +6,9 @@ from pydantic import BaseModel, EmailStr, Field
 class UserRegister(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8, max_length=128)
-    full_name: Optional[str] = Field(None, max_length=100)
-    country_code: Optional[str] = Field(None, max_length=5)
-    mobile_number: Optional[int] = None
+    full_name: str | None = Field(None, max_length=100)
+    country_code: str | None = Field(None, max_length=5)
+    mobile_number: int | None = None
 
 
 class RegisterSendOTPRequest(BaseModel):
@@ -62,8 +61,8 @@ class UserLogin(BaseModel):
 
 class GoogleAuthRequest(BaseModel):
     id_token: str
-    full_name: Optional[str] = None
-    profile_picture: Optional[str] = None
+    full_name: str | None = None
+    profile_picture: str | None = None
 
 
 class TokenOut(BaseModel):
@@ -75,10 +74,10 @@ class TokenOut(BaseModel):
 class UserOut(BaseModel):
     id: int
     email: str
-    full_name: Optional[str] = None
-    profile_picture: Optional[str] = None
-    country_code: Optional[str] = None
-    mobile_number: Optional[int] = None
+    full_name: str | None = None
+    profile_picture: str | None = None
+    country_code: str | None = None
+    mobile_number: int | None = None
     auth_provider: str
     is_verified: bool
     created_at: datetime

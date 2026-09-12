@@ -1,22 +1,22 @@
-import os
 import logging
+import os
 from datetime import datetime, timedelta
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+import jwt
 from dotenv import load_dotenv
 from fastapi import HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.models import User, AuthOTP
+from app.auth.models import AuthOTP, User
 from app.auth.schemas import UserRegister
 from app.auth.security import (
+    ALGORITHM,
+    SECRET_KEY,
     hash_password,
     verify_password,
-    SECRET_KEY,
-    ALGORITHM,
 )
-from app.email_service import send_email_otp, generate_otp
-import jwt
+from app.email_service import generate_otp, send_email_otp
 
 load_dotenv()
 logger = logging.getLogger("app.auth")
@@ -45,7 +45,7 @@ async def _get_latest_otp(
     query = select(AuthOTP).where(
         AuthOTP.purpose == purpose,
         AuthOTP.expires_at > datetime.utcnow(),
-        AuthOTP.is_verified == False,
+        AuthOTP.is_verified.is_(False),
     )
     if email is not None:
         query = query.where(AuthOTP.email == email.lower())
@@ -80,7 +80,7 @@ async def _get_latest_verified_otp(
             AuthOTP.purpose == purpose,
             AuthOTP.email == email.lower(),
             AuthOTP.expires_at > datetime.utcnow(),
-            AuthOTP.is_verified == True,
+            AuthOTP.is_verified.is_(True),
         )
         .order_by(AuthOTP.created_at.desc())
         .limit(1)
@@ -266,8 +266,8 @@ async def authenticate_user(db: AsyncSession, email: str, password: str) -> User
 
 
 async def verify_google_id_token(id_token: str) -> dict:
-    from google.oauth2 import id_token as google_id_token
     from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token as google_id_token
 
     if not GOOGLE_CLIENT_ID:
         raise HTTPException(

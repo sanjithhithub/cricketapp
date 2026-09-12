@@ -1,8 +1,10 @@
 from datetime import datetime
-from sqlalchemy.ext.asyncio import AsyncSession
+
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from app.models import Country, State, City, OTP
+
+from app.models import OTP, Country, State
 from app.sms import verify_otp
 
 
@@ -54,12 +56,15 @@ async def verify_otp_code(
 ):
     now = datetime.utcnow()
     result = await db.execute(
-        select(OTP).where(
+        select(OTP)
+        .where(
             OTP.country_code == country_code,
             OTP.mobile_number == mobile_number,
-            OTP.is_verified == False,
+            OTP.is_verified.is_(False),
             OTP.expires_at > now,
-        ).order_by(OTP.created_at.desc()).limit(1)
+        )
+        .order_by(OTP.created_at.desc())
+        .limit(1)
     )
     otp = result.scalar_one_or_none()
     if not otp:

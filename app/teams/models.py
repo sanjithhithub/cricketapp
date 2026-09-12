@@ -1,6 +1,16 @@
-from sqlalchemy import String, Integer, ForeignKey, Table, Column
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from sqlalchemy import Column, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.levels.models import TeamLevel
+    from app.models import City, Country, State
+    from app.players.models import Player
 
 
 class PlayerTeamAssignment(Base):
@@ -13,9 +23,9 @@ class PlayerTeamAssignment(Base):
 
     role: Mapped[str] = mapped_column(String(20), default="playing_11")
 
-    player: Mapped["Player"] = relationship()
-    team: Mapped["Team"] = relationship()
-    level: Mapped["TeamLevel"] = relationship()
+    player: Mapped[Player] = relationship()
+    team: Mapped[Team] = relationship()
+    level: Mapped[TeamLevel] = relationship()
 
 
 class Team(Base):
@@ -34,8 +44,8 @@ class Team(Base):
     city_id: Mapped[int] = mapped_column(ForeignKey("cities.id"))
     level_id: Mapped[int] = mapped_column(ForeignKey("team_levels.id"))
 
-    level: Mapped["TeamLevel"] = relationship(back_populates="teams")
-    assignments: Mapped[list["PlayerTeamAssignment"]] = relationship(back_populates="team")
-    country: Mapped["Country"] = relationship()
-    state: Mapped["State"] = relationship()
-    city: Mapped["City"] = relationship()
+    level: Mapped[TeamLevel] = relationship(back_populates="teams")
+    assignments: Mapped[list[PlayerTeamAssignment]] = relationship(back_populates="team")
+    country: Mapped[Country] = relationship()
+    state: Mapped[State] = relationship()
+    city: Mapped[City] = relationship()

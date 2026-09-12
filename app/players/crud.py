@@ -1,27 +1,26 @@
+import os
 from datetime import datetime, timedelta
+
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, func
-from app.players.models import Player
-from app.teams.models import PlayerTeamAssignment, Team
+
 from app.levels.models import TeamLevel
-from app.models import OTP, Country, State, City
+from app.models import OTP, City, Country, State
+from app.players.models import Player
 from app.players.schemas import PlayerCreate, PlayerUpdate, TeamAssignment
 from app.sms import send_otp
+from app.teams.models import PlayerTeamAssignment, Team
 
 MAX_SQUAD_SIZE = 15
 
 
 async def get_players(db: AsyncSession, skip: int = 0, limit: int = 100):
-    result = await db.execute(
-        select(Player).offset(skip).limit(limit)
-    )
+    result = await db.execute(select(Player).offset(skip).limit(limit))
     return result.scalars().all()
 
 
 async def get_player(db: AsyncSession, player_id: int):
-    result = await db.execute(
-        select(Player).where(Player.id == player_id)
-    )
+    result = await db.execute(select(Player).where(Player.id == player_id))
     return result.scalar_one_or_none()
 
 
@@ -37,12 +36,15 @@ async def get_player_by_phone(db: AsyncSession, country_code: str, mobile_number
 
 async def search_players(db: AsyncSession, query: str, skip: int = 0, limit: int = 100):
     result = await db.execute(
-        select(Player).where(
+        select(Player)
+        .where(
             or_(
                 Player.first_name.ilike(f"%{query}%"),
                 Player.last_name.ilike(f"%{query}%"),
             )
-        ).offset(skip).limit(limit)
+        )
+        .offset(skip)
+        .limit(limit)
     )
     return result.scalars().all()
 
@@ -56,6 +58,19 @@ async def get_unassigned_players(db: AsyncSession, skip: int = 0, limit: int = 1
 
 
 async def _create_otp_record(db: AsyncSession, country_code: str, mobile_number: int):
+    if os.getenv("OTP_SMS_ENABLED", "true").lower() == "false":
+        expires_at = datetime.utcnow() + timedelta(minutes=5)
+        otp = OTP(
+            country_code=country_code,
+            mobile_number=mobile_number,
+            otp_code="",
+            session_id=None,
+            expires_at=expires_at,
+        )
+        db.add(otp)
+        await db.flush()
+        return otp, False
+
     otp_sent, session_info = await send_otp(country_code, mobile_number)
     expires_at = datetime.utcnow() + timedelta(minutes=5)
     otp = OTP(
@@ -75,15 +90,41 @@ async def create_player(db: AsyncSession, data: PlayerCreate):
     if existing:
         raise ValueError("A player with this phone number already exists")
 
-    player = Player(**data.model_dump())
+    player = Player(**data.model_dump(exclude={"team_id", "role"}))
     db.add(player)
     await db.flush()
 
     _, otp_sent = await _create_otp_record(db, data.country_code, data.mobile_number)
 
-    await db.commit()
+    team_assignment = None
+    if data.team_id is not None:
+        team_result = await db.execute(select(Team).where(Team.id == data.team_id))
+        team = team_result.scalar_one_or_none()
+        if not team:
+            raise ValueError("Team not found")
+
+        assignment, error = await assign_player_to_team(
+            db,
+            player.id,
+            TeamAssignment(team_id=data.team_id, level_id=team.level_id, role=data.role),
+        )
+        if error:
+            raise ValueError(error)
+
+        level_result = await db.execute(select(TeamLevel).where(TeamLevel.id == team.level_id))
+        level = level_result.scalar_one_or_none()
+        team_assignment = {
+            "team_id": team.id,
+            "team_name": team.name,
+            "level_id": team.level_id,
+            "level_name": level.name if level else "Unknown",
+            "role": data.role,
+        }
+    else:
+        await db.commit()
+
     await db.refresh(player)
-    return player, otp_sent
+    return player, otp_sent, team_assignment
 
 
 async def resend_otp_for_player(db: AsyncSession, player_id: int):
@@ -115,7 +156,7 @@ async def replace_player(db: AsyncSession, player_id: int, data: PlayerCreate):
     player = result.scalar_one_or_none()
     if not player:
         return None
-    for key, val in data.model_dump().items():
+    for key, val in data.model_dump(exclude={"team_id", "role"}).items():
         setattr(player, key, val)
     await db.commit()
     await db.refresh(player)
@@ -181,8 +222,7 @@ async def assign_player_to_team(db: AsyncSession, player_id: int, data: TeamAssi
         return None, f"Player already has a team at '{level.name}' level: '{team_name}'"
 
     squad_count = await db.execute(
-        select(func.count(PlayerTeamAssignment.player_id))
-        .where(
+        select(func.count(PlayerTeamAssignment.player_id)).where(
             PlayerTeamAssignment.team_id == data.team_id,
             PlayerTeamAssignment.level_id == data.level_id,
         )
@@ -204,8 +244,7 @@ async def assign_player_to_team(db: AsyncSession, player_id: int, data: TeamAssi
 
 async def get_player_teams(db: AsyncSession, player_id: int):
     result = await db.execute(
-        select(PlayerTeamAssignment)
-        .where(PlayerTeamAssignment.player_id == player_id)
+        select(PlayerTeamAssignment).where(PlayerTeamAssignment.player_id == player_id)
     )
     assignments = result.scalars().all()
 
@@ -216,13 +255,15 @@ async def get_player_teams(db: AsyncSession, player_id: int):
         level_result = await db.execute(select(TeamLevel).where(TeamLevel.id == a.level_id))
         level = level_result.scalar_one_or_none()
 
-        teams.append({
-            "team_id": a.team_id,
-            "team_name": team.name if team else "Unknown",
-            "level_id": a.level_id,
-            "level_name": level.name if level else "Unknown",
-            "role": a.role,
-        })
+        teams.append(
+            {
+                "team_id": a.team_id,
+                "team_name": team.name if team else "Unknown",
+                "level_id": a.level_id,
+                "level_name": level.name if level else "Unknown",
+                "role": a.role,
+            }
+        )
 
     return teams
 
@@ -297,22 +338,24 @@ async def get_available_players_for_team(
 
     players = []
     for player, country_name, state_name, city_name in rows:
-        players.append({
-            "id": player.id,
-            "first_name": player.first_name,
-            "last_name": player.last_name,
-            "date_of_birth": player.date_of_birth,
-            "gender": player.gender,
-            "batting_hand": player.batting_hand,
-            "batting_position": player.batting_position,
-            "bowling_type": player.bowling_type,
-            "country_code": player.country_code,
-            "mobile_number": player.mobile_number,
-            "country_name": country_name,
-            "state_name": state_name,
-            "city_name": city_name,
-            "profile_image": player.profile_image,
-        })
+        players.append(
+            {
+                "id": player.id,
+                "first_name": player.first_name,
+                "last_name": player.last_name,
+                "date_of_birth": player.date_of_birth,
+                "gender": player.gender,
+                "batting_hand": player.batting_hand,
+                "batting_position": player.batting_position,
+                "bowling_type": player.bowling_type,
+                "country_code": player.country_code,
+                "mobile_number": player.mobile_number,
+                "country_name": country_name,
+                "state_name": state_name,
+                "city_name": city_name,
+                "profile_image": player.profile_image,
+            }
+        )
 
     return players, None
 
@@ -346,8 +389,7 @@ async def assign_player_to_team_by_phone(
         return None, f"Player already has a team at '{level.name}' level: '{t_name}'"
 
     squad_count = await db.execute(
-        select(func.count(PlayerTeamAssignment.player_id))
-        .where(
+        select(func.count(PlayerTeamAssignment.player_id)).where(
             PlayerTeamAssignment.team_id == team_id,
             PlayerTeamAssignment.level_id == team.level_id,
         )
