@@ -81,29 +81,37 @@ jobs:
     needs: build-and-push
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - host: 44.200.235.240
+            user: ubuntu
+            dir: /home/ubuntu/cricketapp
+          - host: 32.195.44.211
+            user: ec2-user
+            dir: /home/ec2-user/cricketapp
     steps:
       - uses: actions/checkout@v4
 
-      - name: Copy deploy files to EC2
+      - name: Copy deploy files to EC2 (${{ matrix.target.user }}@${{ matrix.target.host }})
         uses: appleboy/scp-action@v0.1.7
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
+          host: ${{ matrix.target.host }}
+          username: ${{ matrix.target.user }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT }}
           source: "docker-compose.prod.yml,deploy.sh"
-          target: /opt/cricketapp
+          target: ${{ matrix.target.dir }}
 
       - name: Run deploy script on EC2
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
+          host: ${{ matrix.target.host }}
+          username: ${{ matrix.target.user }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT }}
           script: |
-            cd /opt/cricketapp
-            sudo chown -R $(whoami):$(whoami) . 2>/dev/null || true
+            cd ${{ matrix.target.dir }}
             chmod +x deploy.sh
             ./deploy.sh
           envs: GHCR_USERNAME,GHCR_PAT
