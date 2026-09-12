@@ -15,3 +15,4 @@ extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "f
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
