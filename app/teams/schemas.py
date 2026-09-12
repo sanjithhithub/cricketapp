@@ -63,6 +63,18 @@ class TeamOption(BaseModel):
         from_attributes = True
 
 
+class TeamPlayerCount(BaseModel):
+    id: int
+    name: str
+    short_name: str
+    logo: str | None = None
+    level: str | None = None
+    total_players: int = 0
+    playing_11: int = 0
+    substitutes: int = 0
+    bench: int = 0
+
+
 class TeamPlayerAdd(BaseModel):
     country_code: str
     mobile_number: int

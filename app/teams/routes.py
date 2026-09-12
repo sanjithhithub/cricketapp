@@ -14,6 +14,7 @@ from app.teams.crud import (
     get_team_options,
     get_team_squad,
     get_teams,
+    get_teams_with_player_counts,
     replace_team,
     update_team,
     update_team_logo,
@@ -22,6 +23,7 @@ from app.teams.schemas import (
     TeamCreate,
     TeamDetailResponse,
     TeamOption,
+    TeamPlayerCount,
     TeamResponse,
     TeamUpdate,
 )
@@ -46,6 +48,16 @@ async def list_team_options(
     db: AsyncSession = Depends(get_db),
 ):
     return await get_team_options(db, level_id=level_id)
+
+
+@router.get("/teams/with-counts", response_model=list[TeamPlayerCount])
+async def list_teams_with_player_counts(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+    level_id: int | None = Query(None, description="Filter by team level"),
+    db: AsyncSession = Depends(get_db),
+):
+    return await get_teams_with_player_counts(db, skip=skip, limit=limit, level_id=level_id)
 
 
 @router.post("/teams", response_model=TeamResponse, status_code=201)

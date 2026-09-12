@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,6 +23,51 @@ async def get_team_options(db: AsyncSession, level_id: int | None = None):
         query = query.where(Team.level_id == level_id)
     result = await db.execute(query)
     return result.scalars().all()
+
+
+async def get_teams_with_player_counts(
+    db: AsyncSession, skip: int = 0, limit: int = 100, level_id: int | None = None
+):
+    stmt = (
+        select(
+            Team,
+            func.count(PlayerTeamAssignment.player_id),
+            func.coalesce(
+                func.sum(case((PlayerTeamAssignment.role == "playing_11", 1), else_=0)), 0
+            ),
+            func.coalesce(
+                func.sum(case((PlayerTeamAssignment.role == "substitute", 1), else_=0)), 0
+            ),
+            func.coalesce(func.sum(case((PlayerTeamAssignment.role == "bench", 1), else_=0)), 0),
+        )
+        .options(selectinload(Team.level))
+        .outerjoin(PlayerTeamAssignment, PlayerTeamAssignment.team_id == Team.id)
+        .group_by(Team.id)
+        .order_by(Team.name)
+    )
+    if level_id is not None:
+        stmt = stmt.where(Team.level_id == level_id)
+    stmt = stmt.offset(skip).limit(limit)
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    teams = []
+    for team, total, playing_11, substitutes, bench in rows:
+        teams.append(
+            {
+                "id": team.id,
+                "name": team.name,
+                "short_name": team.short_name,
+                "logo": team.logo,
+                "level": team.level.name if team.level else None,
+                "total_players": total,
+                "playing_11": playing_11,
+                "substitutes": substitutes,
+                "bench": bench,
+            }
+        )
+    return teams
 
 
 async def get_team(db: AsyncSession, team_id: int):
