@@ -12,7 +12,7 @@ async def get_teams(db: AsyncSession, skip: int = 0, limit: int = 100, level_id:
     query = select(Team)
     if level_id is not None:
         query = query.where(Team.level_id == level_id)
-    query = query.offset(skip).limit(limit)
+    query = query.order_by(Team.id).offset(skip).limit(limit)
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -21,6 +21,7 @@ async def get_team_options(db: AsyncSession, level_id: int | None = None):
     query = select(Team)
     if level_id is not None:
         query = query.where(Team.level_id == level_id)
+    query = query.order_by(Team.id)
     result = await db.execute(query)
     return result.scalars().all()
 
@@ -43,7 +44,7 @@ async def get_teams_with_player_counts(
         .options(selectinload(Team.level))
         .outerjoin(PlayerTeamAssignment, PlayerTeamAssignment.team_id == Team.id)
         .group_by(Team.id)
-        .order_by(Team.name)
+        .order_by(Team.id)
     )
     if level_id is not None:
         stmt = stmt.where(Team.level_id == level_id)
