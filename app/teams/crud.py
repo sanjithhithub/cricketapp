@@ -9,26 +9,6 @@ MAX_SQUAD_SIZE = 15
 
 
 async def get_teams(db: AsyncSession, skip: int = 0, limit: int = 100, level_id: int | None = None):
-    query = select(Team)
-    if level_id is not None:
-        query = query.where(Team.level_id == level_id)
-    query = query.order_by(Team.id).offset(skip).limit(limit)
-    result = await db.execute(query)
-    return result.scalars().all()
-
-
-async def get_team_options(db: AsyncSession, level_id: int | None = None):
-    query = select(Team)
-    if level_id is not None:
-        query = query.where(Team.level_id == level_id)
-    query = query.order_by(Team.id)
-    result = await db.execute(query)
-    return result.scalars().all()
-
-
-async def get_teams_with_player_counts(
-    db: AsyncSession, skip: int = 0, limit: int = 100, level_id: int | None = None
-):
     stmt = (
         select(
             Team,
@@ -69,6 +49,15 @@ async def get_teams_with_player_counts(
             }
         )
     return teams
+
+
+async def get_team_options(db: AsyncSession, level_id: int | None = None):
+    query = select(Team)
+    if level_id is not None:
+        query = query.where(Team.level_id == level_id)
+    query = query.order_by(Team.id)
+    result = await db.execute(query)
+    return result.scalars().all()
 
 
 async def get_team(db: AsyncSession, team_id: int):

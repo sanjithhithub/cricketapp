@@ -63,7 +63,7 @@ class TeamOption(BaseModel):
         from_attributes = True
 
 
-class TeamPlayerCount(BaseModel):
+class TeamListItem(BaseModel):
     id: int
     name: str
     short_name: str
