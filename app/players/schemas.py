@@ -25,6 +25,7 @@ class PlayerBase(BaseModel):
     @field_validator("gender")
     @classmethod
     def validate_gender(cls, v):
+        v = v.lower()
         if v not in ("male", "female", "other"):
             raise ValueError("gender must be male, female, or other")
         return v
