@@ -11,7 +11,7 @@ from app.crud import (
     get_country_codes,
     verify_otp_code,
 )
-from app.database import Base, engine, get_db
+from app.database import DATABASE_URL, Base, engine, get_db
 from app.levels.routes import router as levels_router
 from app.matches.routes import router as matches_router
 from app.players.crud import mark_player_phone_verified
@@ -49,8 +49,9 @@ app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 @app.on_event("startup")
 async def startup():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    if DATABASE_URL.startswith("sqlite"):
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
     async for db in get_db():
         await seed_locations(db)
         await seed_levels(db)
