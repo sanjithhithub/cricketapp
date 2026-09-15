@@ -6,7 +6,7 @@ python - <<'PY'
 import os
 import time
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.exc import OperationalError
 
 url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
@@ -15,7 +15,7 @@ engine = create_engine(url)
 for _ in range(60):
     try:
         with engine.connect() as conn:
-            conn.execute("SELECT 1")
+            conn.execute(text("SELECT 1"))
         break
     except OperationalError:
         time.sleep(2)
