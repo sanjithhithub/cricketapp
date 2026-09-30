@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models import OTP, Country, State
+from app.players.identity import normalize_country_code
 from app.sms import verify_otp
 
 
@@ -51,15 +52,15 @@ async def get_country_codes():
 async def verify_otp_code(
     db: AsyncSession,
     country_code: str,
-    mobile_number: int,
+    mobile_number: str | int,
     otp_code: str,
 ):
     now = datetime.utcnow()
     result = await db.execute(
         select(OTP)
         .where(
-            OTP.country_code == country_code,
-            OTP.mobile_number == mobile_number,
+            OTP.country_code == normalize_country_code(country_code),
+            OTP.mobile_number == str(mobile_number or ""),
             OTP.is_verified.is_(False),
             OTP.expires_at > now,
         )

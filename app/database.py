@@ -15,7 +15,19 @@ connect_args = {}
 if DATABASE_URL.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 
-engine = create_async_engine(DATABASE_URL, echo=True, connect_args=connect_args)
+
+def _truthy(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+# SQL echo logs every statement *and its bound parameters*, so it writes user
+# emails, phone numbers and password hashes into stdout and costs a log line per
+# query. Off unless explicitly asked for.
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=_truthy("SQL_ECHO"),
+    connect_args=connect_args,
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

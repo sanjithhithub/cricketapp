@@ -1,4 +1,4 @@
-from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -14,6 +14,17 @@ class Innings(Base):
     bowling_team_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
     innings_number: Mapped[int] = mapped_column(Integer)
     target: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # True for Super Over innings (one over per side). These live in the same
+    # table/engine so deliveries reuse all existing scoring logic, but they are
+    # separate innings (numbered 3, 4, 5, ...) so they never corrupt the normal
+    # match statistics.
+    is_super_over: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # A batsman chosen by hand for the next vacancy at the crease (the "who
+    # comes in next?" pick). It overrides the positional batting order for
+    # exactly one wicket, and is cleared as soon as a delivery is bowled with
+    # that player at the crease. NULL means "no manual pick pending", so the
+    # replay falls back to the seeded order.
+    next_batsman_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
 
     deliveries: Mapped[list["Delivery"]] = relationship(back_populates="innings")
     batsmen_order: Mapped[list["InningsBatsman"]] = relationship(back_populates="innings")

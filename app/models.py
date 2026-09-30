@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -38,7 +38,10 @@ class OTP(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     country_code: Mapped[str] = mapped_column(String(5))
-    mobile_number: Mapped[int] = mapped_column(BigInteger)
+    # Text, not an integer, to match players.mobile_number: the verify step
+    # compares this against a player's stored number and the two have to agree
+    # character for character.
+    mobile_number: Mapped[str] = mapped_column(String(20))
     otp_code: Mapped[str] = mapped_column(String(6))
     session_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime)

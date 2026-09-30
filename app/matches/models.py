@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Integer, String
+from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -33,6 +33,14 @@ class Match(Base):
 
     status: Mapped[str] = mapped_column(String(20), default="scheduled")
     current_innings_number: Mapped[int] = mapped_column(Integer, default=0)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+
+    # Super Over: when the main (2-innings) match finishes level, play a
+    # one-over-per-side decider instead of declaring the match tied.
+    super_over_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # When a Super Over is itself tied, keep playing extra Super Overs (with the
+    # batting order of the two teams swapped each time) until one wins.
+    super_over_repeat: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     team_a: Mapped[Team] = relationship(foreign_keys=[team_a_id])
     team_b: Mapped[Team] = relationship(foreign_keys=[team_b_id])

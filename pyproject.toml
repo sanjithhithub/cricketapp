@@ -1,7 +1,12 @@
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-exclude = ["alembic/versions"]
+
+[tool.ruff.format]
+# Migrations are lint-clean but not reformatted: they are append-only history, and
+# reflowing them would put churn in files nobody should be editing again.
+# Needs the `**` - a bare directory pattern is not honoured here.
+exclude = ["alembic/versions/**"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
@@ -9,6 +14,10 @@ ignore = ["E501", "B904", "UP042"]
 
 [tool.ruff.lint.per-file-ignores]
 "alembic/env.py" = ["E402"]
+# Migration revisions are generated in the classic `Union[str, Sequence[str], None]`
+# form. Correctness rules (F/E/W/B) still apply to them - that is the point, since
+# excluding them is what let an undefined `re` reach a deployed migration.
+"alembic/versions/*.py" = ["UP007", "UP035", "I001"]
 
 [tool.ruff.lint.flake8-bugbear]
 extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "fastapi.Path", "fastapi.Body", "fastapi.Header", "fastapi.Cookie", "fastapi.Form", "fastapi.File"]

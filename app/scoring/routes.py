@@ -1,15 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.models import User
+from app.auth.security import get_current_user, require_admin
 from app.database import get_db
 from app.scoring.crud import (
     ScoringRepository,
+    add_batsman,
+    advance_match_after_innings,
     ensure_current_innings,
     get_innings_by_number,
     get_match,
-    open_second_innings,
-    set_match_completed,
     start_scoring,
+    sync_match_result,
 )
 from app.scoring.engine import (
     DeliveryInput,
@@ -20,7 +23,12 @@ from app.scoring.engine import (
     WicketType,
 )
 from app.scoring.enums import MatchStatus
-from app.scoring.schemas import DeliveryCreate, ScorecardResponse, StartInningsRequest
+from app.scoring.schemas import (
+    AddBatsmanRequest,
+    DeliveryCreate,
+    ScorecardResponse,
+    StartInningsRequest,
+)
 
 router = APIRouter(tags=["scoring"])
 
@@ -48,9 +56,10 @@ def _to_delivery_input(data: DeliveryCreate) -> DeliveryInput:
 async def submit_delivery(
     match_id: int,
     data: DeliveryCreate,
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    match = await get_match(db, match_id)
+    match = await get_match(db, match_id, current_user.id)
     if not match:
         raise HTTPException(404, "Scoring match not found")
     if match.status == MatchStatus.COMPLETED.value:
@@ -74,11 +83,46 @@ async def submit_delivery(
     except ScoreEngineError as exc:
         raise _map_engine_error(exc)
     if scorecard.completed:
-        if innings.innings_number == 1:
-            await open_second_innings(db, match, scorecard.total)
-        else:
-            await set_match_completed(db, match)
+        # Advance to the next innings (second innings, or a Super Over in case
+        # of a tie) or finish the match. A wicket awaiting a new batsman is not
+        # completed, so the innings is held open until one is picked.
+        await advance_match_after_innings(db, match, innings, scorecard)
 
+    response = ScorecardResponse.model_validate(scorecard)
+    if match.status == MatchStatus.COMPLETED.value:
+        await db.refresh(match)
+        response.match_result = match.result
+    return response
+
+
+@router.post("/matches/{match_id}/batting-order", response_model=ScorecardResponse)
+async def add_next_batsman(
+    match_id: int,
+    data: AddBatsmanRequest,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    match = await get_match(db, match_id, current_user.id)
+    if not match:
+        raise HTTPException(404, "Scoring match not found")
+    if match.status == MatchStatus.COMPLETED.value:
+        raise HTTPException(409, "Match already completed")
+    if match.current_innings_number == 0:
+        raise HTTPException(400, "No innings started for this match")
+
+    innings = await get_innings_by_number(db, match.id, match.current_innings_number)
+    if not innings:
+        raise HTTPException(404, "No innings available for this match")
+
+    innings, error = await add_batsman(db, innings, data.player_id)
+    if error:
+        raise HTTPException(400, error)
+
+    engine = ScoreEngine(ScoringRepository(db))
+    try:
+        scorecard = await engine.get_scorecard(innings.id)
+    except ScoreEngineError as exc:
+        raise _map_engine_error(exc)
     return ScorecardResponse.model_validate(scorecard)
 
 
@@ -86,9 +130,10 @@ async def submit_delivery(
 async def start_innings_endpoint(
     match_id: int,
     data: StartInningsRequest,
+    current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    match = await get_match(db, match_id)
+    match = await get_match(db, match_id, current_user.id)
     if not match:
         raise HTTPException(404, "Scoring match not found")
     if match.status == MatchStatus.COMPLETED.value:
@@ -109,9 +154,10 @@ async def start_innings_endpoint(
 @router.get("/matches/{match_id}/scorecard", response_model=ScorecardResponse)
 async def get_match_scorecard(
     match_id: int,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    match = await get_match(db, match_id)
+    match = await get_match(db, match_id, current_user.id)
     if not match:
         raise HTTPException(404, "Scoring match not found")
     if match.current_innings_number == 0:
@@ -125,4 +171,12 @@ async def get_match_scorecard(
         scorecard = await engine.get_scorecard(innings.id)
     except ScoreEngineError as exc:
         raise _map_engine_error(exc)
-    return ScorecardResponse.model_validate(scorecard)
+    response = ScorecardResponse.model_validate(scorecard)
+    if match.status == MatchStatus.COMPLETED.value:
+        # Recompute-and-persist so stale/manual results (e.g. a leftover
+        # 'tie' from the create-match form) are replaced by the official
+        # result derived from the innings scorecards.
+        await sync_match_result(db, match)
+        await db.refresh(match)
+        response.match_result = match.result
+    return response

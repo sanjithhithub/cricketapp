@@ -4,12 +4,16 @@ from app.scoring.enums import ExtraType, MatchFormat, WicketType
 
 
 class DeliveryCreate(BaseModel):
+    # Field order matters: Pydantic validates in declaration order and only
+    # exposes the fields validated so far through `info.data`. `extra_type`
+    # must therefore be declared BEFORE the run fields whose validators depend
+    # on it, otherwise those validators silently never run.
     striker_id: int
     non_striker_id: int
     bowler_id: int
+    extra_type: str = "none"
     runs_batsman: int = 0
     runs_extras: int = 0
-    extra_type: str = "none"
     wicket_type: str | None = None
     dismissed_player_id: int | None = None
 
@@ -29,11 +33,40 @@ class DeliveryCreate(BaseModel):
             )
         return v
 
+    @field_validator("wicket_type")
+    @classmethod
+    def validate_wicket_on_penalty_extra(cls, v, info):
+        # A wide / no-ball is dead by the time it reaches the batsman, so the
+        # only wicket it can carry is a run out.
+        if (
+            v is not None
+            and info.data.get("extra_type") in ("wide", "no_ball")
+            and v != WicketType.RUN_OUT.value
+        ):
+            raise ValueError("only a run out can be recorded on a wide or no-ball")
+        return v
+
     @field_validator("runs_batsman", "runs_extras")
     @classmethod
     def validate_non_negative(cls, v):
         if v is None or v < 0:
             raise ValueError("runs cannot be negative")
+        return v
+
+    @field_validator("runs_extras")
+    @classmethod
+    def validate_extras_require_type(cls, v, info):
+        if v != 0 and info.data.get("extra_type") == "none":
+            raise ValueError("extra runs require an extra type")
+        return v
+
+    @field_validator("runs_extras")
+    @classmethod
+    def validate_penalty_extra_minimum(cls, v, info):
+        # A wide and a no-ball are penalty deliveries worth at least one extra
+        # run before any runs scored off the bat.
+        if info.data.get("extra_type") in ("wide", "no_ball") and v < 1:
+            raise ValueError("a wide or no-ball is worth at least 1 extra run")
         return v
 
     @field_validator("runs_batsman")
@@ -99,9 +132,18 @@ class StartInningsRequest(BaseModel):
         return v
 
 
+class AddBatsmanRequest(BaseModel):
+    player_id: int
+
+
 class BatsmanCardOut(BaseModel):
     player_id: int
     position: int
+    # Name and permanent code, so a card can show who batted even when two
+    # players share a name. Additive: existing consumers still get player_id.
+    first_name: str | None = None
+    last_name: str | None = None
+    player_code: str | None = None
     runs: int
     balls_faced: int
     fours: int
@@ -117,6 +159,9 @@ class BatsmanCardOut(BaseModel):
 
 class BowlerCardOut(BaseModel):
     player_id: int
+    first_name: str | None = None
+    last_name: str | None = None
+    player_code: str | None = None
     balls_bowled: int
     overs: float
     overs_str: str
@@ -141,9 +186,21 @@ class ScorecardResponse(BaseModel):
     overs_bowled: float
     overs_bowled_str: str
     current_run_rate: float
+    extras: int
     target: int | None
     completed: bool
     end_reason: str | None
+    max_overs: int | None = None
+    last_over_bowler_id: int | None = None
+    order_exhausted: bool = False
+    is_super_over: bool = False
+    # True when a wicket fell and the innings is waiting for a new batsman to
+    # be picked. At least one of striker_id / non_striker_id is None whenever
+    # this is set.
+    awaiting_batsman: bool = False
+    match_result: str | None = None
+    striker_id: int | None
+    non_striker_id: int | None
     batsmen: list[BatsmanCardOut]
     bowlers: list[BowlerCardOut]
 

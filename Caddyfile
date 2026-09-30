@@ -1,0 +1,26 @@
+# Caddy handles TLS termination and proxies to the app container, which is bound
+# to 127.0.0.1:8000 (see docker-compose.prod.yml). Certificates are issued and
+# renewed automatically by Let's Encrypt, which is why DNS must already point at
+# this server's Elastic IP before the first reload.
+#
+# Live domain. Registered and DNS-managed at GoDaddy (ns35/ns36.domaincontrol.com).
+# www is a CNAME to the apex, so both names must be listed here or Caddy will not
+# issue a certificate covering the www host.
+
+cricketapp.in, www.cricketapp.in {
+	encode zstd gzip
+
+	# Long enough for scorecard image uploads; the container serves /uploads.
+	request_body {
+		max_size 25MB
+	}
+
+	reverse_proxy 127.0.0.1:8000 {
+		header_up X-Real-IP {remote_host}
+	}
+
+	log {
+		output file /var/log/caddy/cricketapp.log
+		format json
+	}
+}

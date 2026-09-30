@@ -20,12 +20,27 @@ TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_VERIFY_SERVICE_SID = os.getenv("TWILIO_VERIFY_SERVICE_SID", "")
 
 
-def _format_phone(country_code: str, mobile_number: int) -> str:
-    digits = "".join(c for c in country_code if c.isdigit())
-    return f"+{digits}{mobile_number}"
+def _format_phone(country_code: str, mobile_number: str | int) -> str:
+    """Build the dialable number the gateway expects.
+
+    The number arrives as text (see app.players.identity) and may still carry
+    formatting the user typed, so the digits are pulled out here rather than
+    trusting the caller to have normalised it. A number that is already in
+    international form is left alone instead of being prefixed twice.
+    """
+    cc_digits = "".join(c for c in str(country_code or "") if c.isdigit())
+    raw = str(mobile_number or "")
+    national = "".join(c for c in raw if c.isdigit())
+    if not national:
+        return ""
+    # "+919812345678" typed into a field that already has a country code would
+    # otherwise become "+91+919812345678".
+    if cc_digits and national.startswith(cc_digits) and len(national) > len(cc_digits):
+        return f"+{national}"
+    return f"+{cc_digits}{national.lstrip('0')}"
 
 
-async def send_otp(country_code: str, mobile_number: int) -> tuple[bool, str | None]:
+async def send_otp(country_code: str, mobile_number: str | int) -> tuple[bool, str | None]:
     if SMS_PROVIDER == "test":
         phone = _format_phone(country_code, mobile_number)
         logger.info("TEST MODE: OTP for +%s is %s", phone, TEST_OTP_CODE)
@@ -63,7 +78,7 @@ async def verify_otp(session_info: str, code: str) -> bool:
     return False
 
 
-async def _send_msg91_otp(country_code: str, mobile_number: int) -> tuple[bool, str | None]:
+async def _send_msg91_otp(country_code: str, mobile_number: str | int) -> tuple[bool, str | None]:
     phone = _format_phone(country_code, mobile_number)
 
     url = "https://api.msg91.com/api/sendotp.php"
@@ -110,7 +125,7 @@ async def _verify_msg91_otp(phone: str, code: str) -> bool:
         return False
 
 
-async def _send_twilio_otp(country_code: str, mobile_number: int) -> tuple[bool, str | None]:
+async def _send_twilio_otp(country_code: str, mobile_number: str | int) -> tuple[bool, str | None]:
     phone = _format_phone(country_code, mobile_number)
 
     try:
@@ -149,7 +164,7 @@ async def _verify_twilio_otp(session_info: str, code: str) -> bool:
         return False
 
 
-async def _send_2factor_otp(country_code: str, mobile_number: int) -> tuple[bool, str | None]:
+async def _send_2factor_otp(country_code: str, mobile_number: str | int) -> tuple[bool, str | None]:
     phone = _format_phone(country_code, mobile_number)
     phone_no_plus = phone.lstrip("+")
 

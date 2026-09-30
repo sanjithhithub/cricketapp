@@ -4,12 +4,18 @@ from sqlalchemy.orm import selectinload
 
 from app.matches.models import Match
 from app.matches.schemas import MatchCreate, MatchUpdate
+from app.scoring.crud import sync_match_result
+from app.scoring.enums import MatchStatus
 from app.teams.models import Team
 
 
-async def _validate_teams(db: AsyncSession, team_a_id: int, team_b_id: int, toss_winner_id: int):
+async def _validate_teams(
+    db: AsyncSession, team_a_id: int, team_b_id: int, toss_winner_id: int, user_id: int
+):
     result = await db.execute(
-        select(Team).where(Team.id.in_([team_a_id, team_b_id, toss_winner_id]))
+        select(Team).where(
+            Team.id.in_([team_a_id, team_b_id, toss_winner_id]), Team.user_id == user_id
+        )
     )
     teams = {t.id: t for t in result.scalars().all()}
     errors = []
@@ -26,45 +32,64 @@ async def _validate_teams(db: AsyncSession, team_a_id: int, team_b_id: int, toss
     return errors
 
 
-async def get_matches(db: AsyncSession, skip: int = 0, limit: int = 100):
+async def _heal_results(db: AsyncSession, matches: Match | list[Match]) -> None:
+    """Recompute-and-persist the result of every completed match so a stale or
+    manually entered result (e.g. a leftover 'tie' from the create-match form)
+    is replaced by the official result derived from the innings scorecards."""
+    if matches is None:
+        return
+    items = [matches] if isinstance(matches, Match) else matches
+    for match in items:
+        if match.status == MatchStatus.COMPLETED.value:
+            await sync_match_result(db, match)
+
+
+async def get_matches(db: AsyncSession, user_id: int, skip: int = 0, limit: int = 100):
     result = await db.execute(
         select(Match)
         .options(
             selectinload(Match.team_a), selectinload(Match.team_b), selectinload(Match.toss_winner)
         )
+        .where(Match.user_id == user_id)
+        .order_by(Match.id)
         .offset(skip)
         .limit(limit)
     )
-    return result.scalars().all()
+    matches = list(result.scalars().all())
+    await _heal_results(db, matches)
+    return matches
 
 
-async def get_match(db: AsyncSession, match_id: int):
+async def get_match(db: AsyncSession, match_id: int, user_id: int):
     result = await db.execute(
         select(Match)
         .options(
             selectinload(Match.team_a), selectinload(Match.team_b), selectinload(Match.toss_winner)
         )
-        .where(Match.id == match_id)
+        .where(Match.id == match_id, Match.user_id == user_id)
     )
-    return result.scalar_one_or_none()
+    match = result.scalar_one_or_none()
+    if match is not None:
+        await _heal_results(db, match)
+    return match
 
 
-async def create_match(db: AsyncSession, data: MatchCreate):
-    errors = await _validate_teams(db, data.team_a_id, data.team_b_id, data.toss_winner_id)
+async def create_match(db: AsyncSession, data: MatchCreate, user_id: int):
+    errors = await _validate_teams(db, data.team_a_id, data.team_b_id, data.toss_winner_id, user_id)
     if errors:
         return None, "; ".join(errors)
 
-    match = Match(**data.model_dump())
+    match = Match(**data.model_dump(), user_id=user_id)
     db.add(match)
     await db.commit()
     await db.refresh(match)
 
-    match = await get_match(db, match.id)
+    match = await get_match(db, match.id, user_id)
     return match, None
 
 
-async def update_match(db: AsyncSession, match_id: int, data: MatchUpdate):
-    match = await get_match(db, match_id)
+async def update_match(db: AsyncSession, match_id: int, data: MatchUpdate, user_id: int):
+    match = await get_match(db, match_id, user_id)
     if not match:
         return None, "Match not found"
 
@@ -74,7 +99,7 @@ async def update_match(db: AsyncSession, match_id: int, data: MatchUpdate):
         new_team_a = update_data.get("team_a_id", match.team_a_id)
         new_team_b = update_data.get("team_b_id", match.team_b_id)
         new_toss_winner = update_data.get("toss_winner_id", match.toss_winner_id)
-        errors = await _validate_teams(db, new_team_a, new_team_b, new_toss_winner)
+        errors = await _validate_teams(db, new_team_a, new_team_b, new_toss_winner, user_id)
         if errors:
             return None, "; ".join(errors)
 
@@ -82,16 +107,16 @@ async def update_match(db: AsyncSession, match_id: int, data: MatchUpdate):
         setattr(match, key, val)
 
     await db.commit()
-    match = await get_match(db, match.id)
+    match = await get_match(db, match.id, user_id)
     return match, None
 
 
-async def replace_match(db: AsyncSession, match_id: int, data: MatchCreate):
-    match = await get_match(db, match_id)
+async def replace_match(db: AsyncSession, match_id: int, data: MatchCreate, user_id: int):
+    match = await get_match(db, match_id, user_id)
     if not match:
         return None, "Match not found"
 
-    errors = await _validate_teams(db, data.team_a_id, data.team_b_id, data.toss_winner_id)
+    errors = await _validate_teams(db, data.team_a_id, data.team_b_id, data.toss_winner_id, user_id)
     if errors:
         return None, "; ".join(errors)
 
@@ -99,12 +124,12 @@ async def replace_match(db: AsyncSession, match_id: int, data: MatchCreate):
         setattr(match, key, val)
 
     await db.commit()
-    match = await get_match(db, match.id)
+    match = await get_match(db, match.id, user_id)
     return match, None
 
 
-async def delete_match(db: AsyncSession, match_id: int):
-    result = await db.execute(select(Match).where(Match.id == match_id))
+async def delete_match(db: AsyncSession, match_id: int, user_id: int):
+    result = await db.execute(select(Match).where(Match.id == match_id, Match.user_id == user_id))
     match = result.scalar_one_or_none()
     if not match:
         return False

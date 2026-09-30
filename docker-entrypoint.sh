@@ -117,4 +117,12 @@ echo "Running database migrations..."
 alembic upgrade head
 
 echo "Starting CricketApp..."
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+# --proxy-headers makes uvicorn trust X-Forwarded-Proto/For from Caddy, so
+# request.url and any redirect it builds use https and the real client IP
+# instead of the http/127.0.0.1 hop. Caddy is the only thing that can reach
+# this port, so trusting that hop is safe.
+exec uvicorn app.main:app \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --proxy-headers \
+  --forwarded-allow-ips=127.0.0.1

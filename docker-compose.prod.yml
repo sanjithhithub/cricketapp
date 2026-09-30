@@ -5,10 +5,16 @@ services:
     image: ghcr.io/sanjithhithub/cricketapp:main
     container_name: cricketapp
     restart: unless-stopped
+    # Bound to loopback on purpose: Caddy owns :80/:443 on the host and is the
+    # only thing that should reach the app. Publishing 0.0.0.0 here would expose
+    # the API unencrypted and let it bypass the TLS cert.
     ports:
-      - "80:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
+    depends_on:
+      cricketdb:
+        condition: service_healthy
     volumes:
       - ./firebase-service-account.json:/app/firebase-service-account.json:ro
       - uploads_data:/app/uploads
@@ -17,10 +23,11 @@ services:
     image: postgres:16-alpine
     container_name: cricketdb
     restart: unless-stopped
-    profiles:
-      - localdb
-    ports:
-      - "5432:5432"
+    # Not published to the host: only the app container needs to reach it, over
+    # the compose network. Exposing 5432 publicly would leave Postgres open to
+    # the internet behind this security group.
+    expose:
+      - "5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -31,7 +38,7 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres -d moviedb"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 12
 
 volumes:
   pgdata:

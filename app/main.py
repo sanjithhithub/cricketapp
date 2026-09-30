@@ -1,3 +1,5 @@
+import os
+
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -28,22 +30,46 @@ from app.teams.routes import router as teams_router
 
 app = FastAPI(title="CricketApp", version="1.0.0")
 
+API_V1_PREFIX = "/v1"
+# Alias prefix. The web client is built against "/api"; exposing both means its
+# baseURL can point straight at this server with no path rewriting on either side.
+API_ALIAS_PREFIX = "/api"
+
+
+def _cors_origins() -> list[str]:
+    configured = os.getenv("CORS_ORIGINS", "").strip()
+    if configured:
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://192.168.1.34:5173",
+        "http://192.168.1.38:5173",
+    ]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # Credentials are enabled, so origins cannot be "*": the spec forbids pairing
+    # a wildcard origin with credentials, and browsers reject such a response.
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-API_V1_PREFIX = "/v1"
+routers = [
+    (auth_router, []),
+    (players_router, [Depends(get_current_user)]),
+    (teams_router, [Depends(get_current_user)]),
+    (levels_router, [Depends(get_current_user)]),
+    (matches_router, [Depends(get_current_user)]),
+    (scoring_router, [Depends(get_current_user)]),
+]
+for router, deps in routers:
+    app.include_router(router, prefix=API_V1_PREFIX, dependencies=deps)
+    app.include_router(router, prefix=API_ALIAS_PREFIX, dependencies=deps)
 
-app.include_router(auth_router, prefix=API_V1_PREFIX)
-app.include_router(players_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
-app.include_router(teams_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
-app.include_router(levels_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
-app.include_router(matches_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
-app.include_router(scoring_router, prefix=API_V1_PREFIX, dependencies=[Depends(get_current_user)])
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 
@@ -69,6 +95,7 @@ async def health():
 
 
 @app.get("/v1/locations", response_model=list[CountryOut])
+@app.get("/api/locations", response_model=list[CountryOut], include_in_schema=False)
 async def list_locations(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
@@ -77,6 +104,7 @@ async def list_locations(
 
 
 @app.get("/v1/country-codes", response_model=list[CountryCodeOut])
+@app.get("/api/country-codes", response_model=list[CountryCodeOut], include_in_schema=False)
 async def list_country_codes(
     _: User = Depends(get_current_user),
 ):
@@ -84,13 +112,14 @@ async def list_country_codes(
 
 
 @app.post("/v1/verify-otp", response_model=OTPVerifyResponse)
+@app.post("/api/verify-otp", response_model=OTPVerifyResponse, include_in_schema=False)
 async def verify_otp(
     data: OTPVerifyRequest,
     db: AsyncSession = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
 ):
     valid = await verify_otp_code(db, data.country_code, data.mobile_number, data.otp_code)
     if not valid:
         raise HTTPException(400, "Invalid or expired OTP")
-    await mark_player_phone_verified(db, data.country_code, data.mobile_number)
+    await mark_player_phone_verified(db, data.country_code, data.mobile_number, current_user.id)
     return OTPVerifyResponse(message="Phone number verified successfully", verified=True)

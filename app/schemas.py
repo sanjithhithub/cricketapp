@@ -1,4 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+from app.players.identity import normalize_country_code
 
 
 class LocationOut(BaseModel):
@@ -34,8 +36,20 @@ class CountryCodeOut(BaseModel):
 
 class OTPVerifyRequest(BaseModel):
     country_code: str
-    mobile_number: int
+    # Text: a number may keep its leading zeros, and the value is compared
+    # against players.mobile_number, which is text for the same reason.
+    mobile_number: str
     otp_code: str
+
+    @field_validator("mobile_number", mode="before")
+    @classmethod
+    def validate_mobile_number(cls, v):
+        return str(v) if v is not None else v
+
+    @field_validator("country_code", mode="before")
+    @classmethod
+    def validate_country_code(cls, v):
+        return normalize_country_code(v)
 
 
 class OTPVerifyResponse(BaseModel):

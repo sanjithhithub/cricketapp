@@ -16,6 +16,11 @@ class MatchBase(BaseModel):
     referee_1_name: str | None = None
     referee_2_name: str | None = None
     match_referee_name: str | None = None
+    # A level main match goes to a one-over-per-side Super Over instead of
+    # a tied result. super_over_repeat keeps playing extra Super Overs (batting
+    # order swapped each time) when the Super Over is itself level.
+    super_over_enabled: bool = False
+    super_over_repeat: bool = True
 
     @field_validator("match_type")
     @classmethod
@@ -49,6 +54,8 @@ class MatchUpdate(BaseModel):
     referee_1_name: str | None = None
     referee_2_name: str | None = None
     match_referee_name: str | None = None
+    super_over_enabled: bool | None = None
+    super_over_repeat: bool | None = None
 
     @field_validator("match_type")
     @classmethod
@@ -76,6 +83,8 @@ class MatchTeamInfo(BaseModel):
 
 class MatchResponse(MatchBase):
     id: int
+    status: str = "scheduled"
+    current_innings_number: int = 0
     team_a: MatchTeamInfo
     team_b: MatchTeamInfo
     toss_winner: MatchTeamInfo

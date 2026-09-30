@@ -79,6 +79,7 @@ class UserOut(BaseModel):
     country_code: str | None = None
     mobile_number: int | None = None
     auth_provider: str
+    role: str = "admin"
     is_verified: bool
     created_at: datetime
 

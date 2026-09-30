@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="docker-compose.prod.yml"
-HEALTH_URL="http://localhost:80/health"
+HEALTH_URL="http://127.0.0.1:8000/health"
 
 cd "$APP_DIR"
 
