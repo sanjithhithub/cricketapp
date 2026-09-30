@@ -1,0 +1,7 @@
+[Unit]
+Description=Rotate caddy logs
+Documentation=file:/etc/logrotate.d/caddy
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate /etc/logrotate.d/caddy

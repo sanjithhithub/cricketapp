@@ -1,0 +1,18 @@
+/etc/logrotate.d/caddy
+
+# Caddy holds the log file open, so rotation must copy-and-truncate rather than
+# rename: a plain rename would leave Caddy appending to the rotated inode and the
+# new file would stay empty. The root volume is only ~7GB on this instance, so
+# unbounded request logs are a real way to fill the disk and take the app down.
+
+/var/log/caddy/*.log {
+    daily
+    maxsize 10M
+    rotate 5
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    su caddy caddy
+}

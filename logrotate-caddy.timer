@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly log rotation for caddy (disk-constrained instance)
+Documentation=file:/etc/logrotate.d/caddy
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

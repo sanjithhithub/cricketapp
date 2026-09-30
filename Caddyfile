@@ -20,6 +20,9 @@ cricketapp.in, www.cricketapp.in {
 	}
 
 	log {
+		# Rotation is handled by /etc/logrotate.d/caddy rather than Caddy options.
+		# The Caddyfile adapter in 2.x rejects the roll_* subdirectives
+		# ("unrecognized subdirective"), and they are only settable via JSON.
 		output file /var/log/caddy/cricketapp.log
 		format json
 	}
