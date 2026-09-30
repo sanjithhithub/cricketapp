@@ -1,0 +1,22 @@
+# Normalize line endings on commit and check out LF everywhere.
+#
+# Without this, core.autocrlf on a Windows checkout rewrites the shell scripts
+# to CRLF. Docker then builds an image whose entrypoint is "#!/bin/sh\r", which
+# the kernel cannot exec, and the container dies with
+# "exec ./docker-entrypoint.sh: no such file or directory".
+* text=auto eol=lf
+
+# These are executed inside the container. They must never carry a CR.
+*.sh text eol=lf
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Binary-ish assets that must survive untouched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.db binary
+*.sqlite3 binary
