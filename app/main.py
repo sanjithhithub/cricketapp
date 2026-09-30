@@ -70,7 +70,13 @@ for router, deps in routers:
     app.include_router(router, prefix=API_V1_PREFIX, dependencies=deps)
     app.include_router(router, prefix=API_ALIAS_PREFIX, dependencies=deps)
 
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+UPLOADS_DIR = "uploads"
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+app.mount(
+    "/uploads",
+    StaticFiles(directory=UPLOADS_DIR, check_dir=False),
+    name="uploads",
+)
 
 
 @app.on_event("startup")
