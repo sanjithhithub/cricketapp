@@ -95,15 +95,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Copy deploy files to server
-        uses: appleboy/scp-action@v0.6.6
+        uses: appleboy/scp-action@v1.0.0
         with:
-          # StrictHostKeyChecking=no is the default here. The hosted runner holds
-          # no known_hosts entry for this EC2 box and has no way to accept one
-          # interactively, so checking would fail the job. The consequence is
-          # that this step trusts whatever answers on DEPLOY_HOST:22 - acceptable
-          # because DEPLOY_HOST is an Elastic IP you control, over a channel that
-          # already receives the deploy key.
-          options: -o StrictHostKeyChecking=no
+          # `fingerprint` pins the server's host key by SHA256. Leaving it unset
+          # makes the action skip host key verification entirely (its documented
+          # default), so this secret is what stops a man-in-the-middle on port 22
+          # from capturing SSH_KEY and GHCR_PAT. Set it once, from the value
+          # printed below, and never rotate it without also updating the EC2
+          # host keys.
+          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
@@ -112,7 +112,7 @@ jobs:
           target: ${{ secrets.DEPLOY_DIR }}
 
       - name: Run deploy script on server
-        uses: appleboy/ssh-action@v1.2.2
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
