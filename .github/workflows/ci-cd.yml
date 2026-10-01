@@ -157,6 +157,7 @@ jobs:
       - name: Verify host key
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
           SSH_FINGERPRINT: ${{ secrets.SSH_FINGERPRINT }}
         run: |
           set -euo pipefail
@@ -169,9 +170,13 @@ jobs:
           # match. Restricting the scan makes it a single value to compare, and
           # dropping the comment line keeps it out of ssh-keygen's input.
           scan=$(mktemp)
-          ssh-keyscan -t ed25519 "$DEPLOY_HOST" 2>/dev/null | grep -v '^#' > "$scan" || true
+          # Scan the port from the secret, not a hardcoded 22. Without -p the scan
+          # always hit 22, so a non-standard SSH_PORT would compare the wrong key
+          # and fail as a bogus fingerprint mismatch.
+          ssh-keyscan -p "$SSH_PORT" -t ed25519 "$DEPLOY_HOST" 2>/dev/null \
+            | grep -v '^#' > "$scan" || true
           if [ ! -s "$scan" ]; then
-            echo "::error::no host key returned by $DEPLOY_HOST - is port ${SSH_PORT:-22} open?"
+            echo "::error::no host key returned by $DEPLOY_HOST on port $SSH_PORT - is it open?"
             exit 1
           fi
 
@@ -232,9 +237,27 @@ jobs:
           GHCR_PAT: ${{ secrets.GHCR_PAT }}
         run: |
           set -euo pipefail
+          # deploy.sh runs under `set -u` and needs GHCR_USERNAME and GHCR_PAT.
+          # Declaring them in this step's env is not enough: ssh does not forward
+          # the local environment without SendEnv/AcceptEnv, which are not
+          # configured, so the remote shell would see them as unset and abort with
+          # "GHCR_PAT: unbound variable".
+          #
+          # Base64 the values and splice them into the script body. Base64 output
+          # is only [A-Za-z0-9+/=], so it cannot terminate the heredoc or be
+          # re-interpreted by the remote shell, which a token containing quotes or
+          # $(...) would otherwise risk. The secrets travel in the SSH stream
+          # rather than in argv, so they never show up in the server's process
+          # list the way they would as command arguments.
+          user_b64=$(printf '%s' "$GHCR_USERNAME" | base64 -w0)
+          pat_b64=$(printf '%s' "$GHCR_PAT" | base64 -w0)
+
           ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" \
+            -o BatchMode=yes -o ConnectTimeout=15 \
             "$DEPLOY_USER@$DEPLOY_HOST" bash -s <<REMOTE
           set -euo pipefail
+          export GHCR_USERNAME="\$(printf '%s' '$user_b64' | base64 -d)"
+          export GHCR_PAT="\$(printf '%s' '$pat_b64' | base64 -d)"
           cd "$DEPLOY_DIR"
           chmod +x deploy.sh
           ./deploy.sh
