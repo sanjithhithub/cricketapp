@@ -33,6 +33,13 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
 
+      - name: Validate workflow YAML
+        # GitHub rejects a malformed workflow at dispatch time, so the run fails
+        # before any job starts and the error only shows in the Actions UI. A
+        # mis-indented block scalar is invisible to pytest and ruff, which is how
+        # a broken deploy got pushed once already.
+        run: python check_workflows.py
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -148,7 +155,7 @@ jobs:
           SSH_FINGERPRINT: ${{ secrets.SSH_FINGERPRINT }}
         run: |
           set -euo pipefail
-# The host is pinned rather than trusted blindly. Accepting whatever
+          # The host is pinned rather than trusted blindly. Accepting whatever
           # answers on port 22 would let a man-in-the-middle capture SSH_KEY and
           # GHCR_PAT during every deploy.
           #
