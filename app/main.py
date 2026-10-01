@@ -36,10 +36,16 @@ API_V1_PREFIX = "/v1"
 API_ALIAS_PREFIX = "/api"
 
 
+def _split_origins(raw: str) -> list[str]:
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 def _cors_origins() -> list[str]:
     configured = os.getenv("CORS_ORIGINS", "").strip()
     if configured:
-        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+        return _split_origins(configured)
+    # Dev fallback only. In production CORS_ORIGINS is set in .env; leaving it
+    # empty here means every browser request from the real site is blocked.
     return [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
@@ -48,14 +54,33 @@ def _cors_origins() -> list[str]:
     ]
 
 
+def _cors_origin_regex() -> str | None:
+    """Pattern for extra origins, from CORS_ORIGINS_REGEX.
+
+    Needed for cases a literal list cannot express: a large set of preview
+    subdomains, or any host under a domain you control. Kept separate from
+    CORS_ORIGINS so the common case stays a plain list a reviewer can read.
+    """
+    return os.getenv("CORS_ORIGINS_REGEX", "").strip() or None
+
+
 app.add_middleware(
     CORSMiddleware,
     # Credentials are enabled, so origins cannot be "*": the spec forbids pairing
     # a wildcard origin with credentials, and browsers reject such a response.
+    # CORS_ORIGINS_REGEX is the escape hatch when you need many hosts - pair it
+    # with allow_credentials and the server reflects the matching origin, which
+    # is legal precisely because it is never the literal "*".
     allow_origins=_cors_origins(),
+    allow_origin_regex=_cors_origin_regex(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Browsers cap a preflight cache at 600 seconds, so 10 minutes is the most
+    # that actually takes effect. Without this every request pays a preflight.
+    max_age=600,
+    # Needed so the browser can read these from a cross-origin response.
+    expose_headers=["Content-Length", "Content-Type"],
 )
 
 routers = [

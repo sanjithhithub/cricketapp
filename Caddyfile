@@ -16,8 +16,45 @@ cricketapp.in, www.cricketapp.in {
 	}
 
 	reverse_proxy 127.0.0.1:8000 {
+		# Pass the real client address through. Without this the app sees
+		# 127.0.0.1 for every request, so audit logs and any IP-based
+		# rate limiting attribute all traffic to Caddy itself.
 		header_up X-Real-IP {remote_host}
+
+		# uvicorn is started with --proxy-headers, so it must receive the
+		# original scheme and host. Without these, request.url is built as
+		# http://127.0.0.1:8000 and any absolute redirect or generated link
+		# leaves the https domain.
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Forwarded-Host {host}
+
+		# Scorecard image uploads can take a while on a small instance.
+		transport http {
+			read_timeout 120s
+			write_timeout 120s
+		}
 	}
+
+	# Security headers. HSTS is the notable one: once a browser caches it, that
+	# browser refuses plain http to this host for the full max-age. It is safe
+	# now because TLS terminates here, but if the certificate is ever broken
+	# clients cannot fall back. includeSubDomains assumes every subdomain is
+	# also served by this instance over https - drop it if that is not true.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	# Preflight (OPTIONS) requests are deliberately NOT handled here. They must
+	# reach the app, because the Access-Control-Allow-Origin and
+	# Access-Control-Allow-Credentials headers that the browser checks live in
+	# the app's CORSMiddleware response. Answering them at the proxy with a bare
+	# 204 would strip exactly those headers and every cross-origin call from the
+	# browser would fail. Starlette's middleware short-circuits OPTIONS before
+	# routing, so no token is required and there is no auth interaction.
 
 	log {
 		# Rotation is handled by /etc/logrotate.d/caddy rather than Caddy options.

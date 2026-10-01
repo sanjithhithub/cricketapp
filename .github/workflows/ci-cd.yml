@@ -5,9 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege by default. Only build-and-push needs to write packages, so it
+# widens its own token below rather than every job inheriting write access.
 permissions:
   contents: read
-  packages: write
 
 env:
   REGISTRY: ghcr.io
@@ -53,6 +54,10 @@ jobs:
     needs: [lint, test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Required to push to GHCR with GITHUB_TOKEN.
+      packages: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -76,6 +81,11 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:main
             ${{ env.IMAGE }}:sha-${{ github.sha }}
+          # The instance is small on disk, so prune build cache from previous
+          # runs. Without this the runner is fine, but it keeps pushing harder
+          # to complete builds for no benefit.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     needs: build-and-push
@@ -85,8 +95,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Copy deploy files to server
-        uses: appleboy/scp-action@v1.0.0
+        uses: appleboy/scp-action@v0.6.6
         with:
+          # StrictHostKeyChecking=no is the default here. The hosted runner holds
+          # no known_hosts entry for this EC2 box and has no way to accept one
+          # interactively, so checking would fail the job. The consequence is
+          # that this step trusts whatever answers on DEPLOY_HOST:22 - acceptable
+          # because DEPLOY_HOST is an Elastic IP you control, over a channel that
+          # already receives the deploy key.
+          options: -o StrictHostKeyChecking=no
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
@@ -95,17 +112,25 @@ jobs:
           target: ${{ secrets.DEPLOY_DIR }}
 
       - name: Run deploy script on server
-        uses: appleboy/ssh-action@v1.2.0
+        uses: appleboy/ssh-action@v1.2.2
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT }}
           script_stop: true
+          # Fail the job on the first non-zero exit inside the script.
+          # Without this the action keeps going after a failed step, which turns
+          # a broken deploy into a green checkmark.
+          command_timeout: 10m
           script: |
             cd ${{ secrets.DEPLOY_DIR }}
             chmod +x deploy.sh
             ./deploy.sh
+            # The container answers on loopback but that alone does not prove the
+            # public path works, and the certificate is only issued once Caddy is
+            # reloaded. Verify end to end so a bad deploy cannot report success.
+            curl -sf https://cricketapp.in/health
           envs: GHCR_USERNAME,GHCR_PAT
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
