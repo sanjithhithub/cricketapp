@@ -27,6 +27,11 @@ jobs:
       - name: Install ruff
         run: pip install ruff
 
+      - name: Install workflow checker dependencies
+        # check_workflows.py needs PyYAML. requirements.txt is not installed in
+        # this job because lint runs before the app dependencies are needed.
+        run: pip install pyyaml
+
       - name: Ruff check
         run: ruff check .
 
