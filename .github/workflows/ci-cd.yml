@@ -148,20 +148,40 @@ jobs:
           SSH_FINGERPRINT: ${{ secrets.SSH_FINGERPRINT }}
         run: |
           set -euo pipefail
-          # The key is pinned rather than trusted blindly. Accepting whatever
+# The host is pinned rather than trusted blindly. Accepting whatever
           # answers on port 22 would let a man-in-the-middle capture SSH_KEY and
           # GHCR_PAT during every deploy.
-          ssh-keyscan -t rsa,ecdsa,ed25519 "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          #
+          # ed25519 only. A host offers RSA, ECDSA and ED25519 keys, and the
+          # secret holds just one, so comparing against all three could never
+          # match. Restricting the scan makes it a single value to compare, and
+          # dropping the comment line keeps it out of ssh-keygen's input.
+          scan=$(mktemp)
+          ssh-keyscan -t ed25519 "$DEPLOY_HOST" 2>/dev/null | grep -v '^#' > "$scan" || true
+          if [ ! -s "$scan" ]; then
+            echo "::error::no host key returned by $DEPLOY_HOST - is port ${SSH_PORT:-22} open?"
+            exit 1
+          fi
 
-          # Confirm the scanned keys really are the ones expected, then drop
-          # anything unrecognised so a substituted host cannot slip through.
-          ssh-keygen -lf ~/.ssh/known_hosts | while read -r bits fingerprint name type; do
-            if [ "$fingerprint" != "$SSH_FINGERPRINT" ]; then
-              echo "::error::host key mismatch for $name: expected $SSH_FINGERPRINT, got $fingerprint"
-              exit 1
-            fi
-          done
-          echo "host key verified: $SSH_FINGERPRINT"
+          actual=$(ssh-keygen -E sha256 -lf "$scan" | awk '{print $2}')
+          echo "  scanned: $actual"
+
+          if [ "$actual" != "$SSH_FINGERPRINT" ]; then
+            echo "::error::host key mismatch"
+            echo "::error::  expected: $SSH_FINGERPRINT"
+            echo "::error::  scanned:  $actual"
+            echo "::error::If the host keys were rotated, update SSH_FINGERPRINT to the scanned value."
+            exit 1
+          fi
+          echo "host key verified: $actual"
+
+          # known_hosts holds only the key that matched, so no other host key can
+          # be used to authenticate later.
+          rm -f ~/.ssh/known_hosts
+          install -m 600 /dev/null ~/.ssh/known_hosts
+          cat "$scan" >> ~/.ssh/known_hosts
+          rm -f "$scan"
+          ssh-keygen -E sha256 -lf ~/.ssh/known_hosts
 
       - name: Copy deploy files to server
         env:
