@@ -15,7 +15,22 @@ HEALTH_ATTEMPTS=180
 cd "$APP_DIR"
 
 echo "[1/5] Logging in to GHCR..."
-echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
+# Without this the reason for a failed login never reached the CI log at all,
+# because `set -e` aborted at the pipeline with only docker's own stderr, which
+# is easy to miss several lines above a remote tar. Name the likely causes so the
+# failure is diagnosable from the workflow log alone.
+if ! echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin; then
+  echo "ERROR: docker login to ghcr.io failed." >&2
+  echo "  - GHCR_PAT must be a CLASSIC token with read:packages." >&2
+  echo "    A fine-grained PAT cannot read packages, even with the package" >&2
+  echo "    granted, and is the usual cause of 'authentication required'." >&2
+  echo "  - The token may have expired or been revoked." >&2
+  echo "  - GHCR_USERNAME must be the account that owns the image:" >&2
+  echo "    $GHCR_USERNAME" >&2
+  echo "  - Check for a stray newline or trailing space in the secret." >&2
+  exit 1
+fi
+echo "    logged in to ghcr.io as $GHCR_USERNAME"
 
 echo "[2/5] Pulling latest image..."
 docker compose -f "$COMPOSE_FILE" pull
