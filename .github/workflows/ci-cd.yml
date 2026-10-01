@@ -203,9 +203,24 @@ jobs:
           SSH_PORT: ${{ secrets.SSH_PORT }}
         run: |
           set -euo pipefail
-          scp -i ~/.ssh/id_deploy -P "$SSH_PORT" \
-            docker-compose.prod.yml deploy.sh \
-            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_DIR/"
+          # Stream a tarball over plain ssh rather than using scp or sftp.
+          # This server's sshd accepts exec and has a valid authorized_keys
+          # entry, but its sftp subsystem is refused, so both scp (which shells
+          # out to `scp -t`) and sftp fail while auth itself is fine. Tar over
+          # exec needs no subsystem and transfers any number of files at once.
+          #
+          # BatchMode stops ssh falling back to an interactive password prompt,
+          # which would hang the job until it times out instead of failing now.
+          tar -cf - docker-compose.prod.yml deploy.sh \
+            | ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" \
+                -o BatchMode=yes -o ConnectTimeout=15 \
+                "$DEPLOY_USER@$DEPLOY_HOST" \
+                "tar -xf - -C '$DEPLOY_DIR'"
+
+          # Confirm arrival rather than trusting a silent no-op.
+          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" -o BatchMode=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "ls -l '$DEPLOY_DIR/docker-compose.prod.yml' '$DEPLOY_DIR/deploy.sh'"
 
       - name: Run deploy script on server
         env:
