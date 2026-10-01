@@ -28,3 +28,7 @@ uploads/
 .vscode/
 .idea/
 .DS_Store
+
+# Local deploy keys, never commit
+.keys/
+*.pem
