@@ -94,44 +94,94 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Plain ssh/scp rather than appleboy/scp-action and ssh-action. Those two
+      # download a Go binary from a release URL on every run and parse the key
+      # from a secret through their own loader; when either step broke, the
+      # failure surfaced only inside a log this workflow cannot read unauthenticated.
+      # Plain openssh does the same job with shell output in the job log, so the
+      # next failure is diagnosable without extra tooling.
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 600 /dev/null ~/.ssh/id_deploy
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+
+          # Guard against a secret that lost its PEM armour in transit. Without
+          # the BEGIN line, ssh fails later with an opaque "bad permissions" or
+          # "invalid format" message.
+          if ! head -1 ~/.ssh/id_deploy | grep -q 'BEGIN'; then
+            echo "::error::SSH_KEY is missing its '-----BEGIN ... PRIVATE KEY-----' header"
+            exit 1
+          fi
+
+          mkdir -p ~/.ssh
+          touch ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Verify host key
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_FINGERPRINT: ${{ secrets.SSH_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          # The key is pinned rather than trusted blindly. Accepting whatever
+          # answers on port 22 would let a man-in-the-middle capture SSH_KEY and
+          # GHCR_PAT during every deploy.
+          ssh-keyscan -t rsa,ecdsa,ed25519 "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # Confirm the scanned keys really are the ones expected, then drop
+          # anything unrecognised so a substituted host cannot slip through.
+          ssh-keygen -lf ~/.ssh/known_hosts | while read -r bits fingerprint name type; do
+            if [ "$fingerprint" != "$SSH_FINGERPRINT" ]; then
+              echo "::error::host key mismatch for $name: expected $SSH_FINGERPRINT, got $fingerprint"
+              exit 1
+            fi
+          done
+          echo "host key verified: $SSH_FINGERPRINT"
+
       - name: Copy deploy files to server
-        uses: appleboy/scp-action@v1.0.0
-        with:
-          # `fingerprint` pins the server's host key by SHA256. Leaving it unset
-          # makes the action skip host key verification entirely (its documented
-          # default), so this secret is what stops a man-in-the-middle on port 22
-          # from capturing SSH_KEY and GHCR_PAT. Set it once, from the value
-          # printed below, and never rotate it without also updating the EC2
-          # host keys.
-          fingerprint: ${{ secrets.SSH_FINGERPRINT }}
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          source: "docker-compose.prod.yml,deploy.sh"
-          target: ${{ secrets.DEPLOY_DIR }}
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/id_deploy -P "$SSH_PORT" \
+            docker-compose.prod.yml deploy.sh \
+            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_DIR/"
 
       - name: Run deploy script on server
-        uses: appleboy/ssh-action@v1.2.5
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          script_stop: true
-          # Fail the job on the first non-zero exit inside the script.
-          # Without this the action keeps going after a failed step, which turns
-          # a broken deploy into a green checkmark.
-          command_timeout: 10m
-          script: |
-            cd ${{ secrets.DEPLOY_DIR }}
-            chmod +x deploy.sh
-            ./deploy.sh
-            # The container answers on loopback but that alone does not prove the
-            # public path works, and the certificate is only issued once Caddy is
-            # reloaded. Verify end to end so a bad deploy cannot report success.
-            curl -sf https://cricketapp.in/health
-          envs: GHCR_USERNAME,GHCR_PAT
         env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_PAT: ${{ secrets.GHCR_PAT }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy -p "$SSH_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" bash -s <<REMOTE
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          chmod +x deploy.sh
+          ./deploy.sh
+          REMOTE
+
+      - name: Verify public endpoint
+        run: |
+          set -euo pipefail
+          # A container answering on loopback does not prove the public path
+          # works, and the certificate only exists once Caddy has reloaded. Check
+          # the real URL so a broken release cannot report success.
+          code=$(curl -s -o /dev/null -w '%{http_code}' --retry 5 --retry-delay 5 https://cricketapp.in/health)
+          echo "https://cricketapp.in/health -> $code"
+          if [ "$code" != "200" ]; then
+            echo "::error::public health check returned $code, expected 200"
+            exit 1
+          fi
