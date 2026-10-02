@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 import random
@@ -20,6 +21,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
 SMTP_TLS = os.getenv("SMTP_TLS", "true").lower() == "true"
 SMTP_SSL = os.getenv("SMTP_SSL", "false").lower() == "true"
+SMTP_TIMEOUT_SECONDS = int(os.getenv("SMTP_TIMEOUT_SECONDS", "20"))
 TEST_EMAIL_OTP_CODE = os.getenv("TEST_EMAIL_OTP_CODE", "654321")
 
 
@@ -36,17 +38,19 @@ async def send_email_otp(to_email: str, otp_code: str) -> tuple[bool, str | None
         return True, None
 
     if EMAIL_PROVIDER in ("smtp", "email"):
-        return await _send_smtp_otp(to_email, otp_code)
+        if not SMTP_HOST or not SMTP_USER:
+            logger.error("SMTP is not configured (SMTP_HOST/SMTP_USER missing)")
+            return False, "Email service is not configured on the server"
+        # smtplib blocks the calling thread for the whole SMTP conversation.
+        # Run it in a worker thread so a slow or unreachable SMTP server cannot
+        # stall FastAPI's event loop and hang every other request.
+        return await asyncio.to_thread(_send_smtp_otp, to_email, otp_code)
 
     logger.error("Unknown EMAIL_PROVIDER: %s", EMAIL_PROVIDER)
-    return False, "EMAIL_PROVIDER is not configured"
+    return False, "Email service is not configured on the server"
 
 
-async def _send_smtp_otp(to_email: str, otp_code: str) -> tuple[bool, str | None]:
-    if not SMTP_HOST or not SMTP_USER:
-        logger.error("SMTP is not configured (SMTP_HOST/SMTP_USER missing)")
-        return False, "SMTP is not configured"
-
+def _send_smtp_otp(to_email: str, otp_code: str) -> tuple[bool, str | None]:
     subject = "Your CricketApp OTP"
     body = (
         f"Hello,\n\n"
@@ -63,9 +67,9 @@ async def _send_smtp_otp(to_email: str, otp_code: str) -> tuple[bool, str | None
 
     try:
         if SMTP_SSL:
-            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT)
+            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS)
         else:
-            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT_SECONDS)
         with server:
             if SMTP_TLS and not SMTP_SSL:
                 server.starttls()
@@ -74,6 +78,25 @@ async def _send_smtp_otp(to_email: str, otp_code: str) -> tuple[bool, str | None
             server.sendmail(SMTP_FROM or SMTP_USER, to_email, msg.as_string())
         logger.info("Email OTP sent to %s", to_email)
         return True, None
-    except Exception:
-        logger.exception("Email OTP send failed for %s", to_email)
-        return False, "Failed to send email"
+    except smtplib.SMTPAuthenticationError as exc:
+        # 535 from Gmail means the app password is wrong, revoked, or every app
+        # password was revoked because 2-Step Verification was turned off.
+        logger.error(
+            "SMTP authentication rejected by %s (%s): %s",
+            SMTP_HOST,
+            exc.smtp_code,
+            (exc.smtp_error or b"").decode(errors="replace"),
+        )
+        return False, f"Email service rejected the configured credentials (SMTP {exc.smtp_code})"
+    except smtplib.SMTPRecipientsRefused as exc:
+        logger.error("SMTP refused recipient %s: %s", to_email, exc.recipients)
+        return False, "This email address was rejected by the email service"
+    except smtplib.SMTPException as exc:
+        logger.error("SMTP error while sending to %s: %s", to_email, exc)
+        return False, "Email service error while sending the OTP"
+    except TimeoutError as exc:
+        logger.error("SMTP timeout contacting %s:%s: %s", SMTP_HOST, SMTP_PORT, exc)
+        return False, "Email service timed out"
+    except OSError as exc:
+        logger.error("SMTP connection to %s:%s failed: %s", SMTP_HOST, SMTP_PORT, exc)
+        return False, "Could not reach the email service"
