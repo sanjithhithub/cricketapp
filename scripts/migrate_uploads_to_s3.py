@@ -26,8 +26,14 @@ from pathlib import Path
 
 sys.path.insert(0, os.getcwd())
 
+# Importing app.main registers every ORM mapper before any model is touched.
+# Importing app.players.models on its own configures mappers while
+# app.teams.models is still half-loaded, which SQLAlchemy rejects with
+# "expression 'TeamLevel' failed to locate a name". The app itself gets this for
+# free because main imports every router; a standalone script has to.
 from sqlalchemy import select  # noqa: E402
 
+import app.main  # noqa: F401,E402
 from app.database import async_session  # noqa: E402
 from app.players.models import Player  # noqa: E402
 from app.storage import InvalidImage, get_client, put_image  # noqa: E402
