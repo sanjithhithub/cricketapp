@@ -12,5 +12,9 @@ httpx==0.28.1
 python-dotenv==1.1.0
 firebase-admin==6.6.0
 twilio==9.8.4
+# Uploads to S3 via the EC2 instance profile. boto3 is the only AWS SDK needed;
+# it resolves the instance profile through IMDS on its own, so no access key is
+# stored in .env or the image.
+boto3==1.38.30
 passlib==1.7.4
 PyJWT==2.13.0

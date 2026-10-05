@@ -12,6 +12,26 @@ services:
       - "127.0.0.1:8000:8000"
     env_file:
       - .env
+    environment:
+      # Credentials for S3 come from the instance profile
+      # (cricketapp-s3-upload), which is attached to this EC2 instance. boto3
+      # reaches IMDS at 169.254.169.254 to fetch short-lived credentials that
+      # AWS rotates hourly, so no access key is ever written to .env or baked
+      # into this image.
+      #
+      # Containers do not inherit the instance profile automatically, so the
+      # region must be set explicitly or boto3 guesses and S3 calls fail with
+      # NoRegionError. It is declared here rather than in .env because it is a
+      # property of the deployment target, not a secret.
+      AWS_REGION: eu-north-1
+      AWS_DEFAULT_REGION: eu-north-1
+      # IMDSv2 is enabled on this instance, so IMDSv1 responses are refused.
+      # boto3 already uses IMDSv2 by default; this is here so a future SDK
+      # downgrade cannot silently fall back to the unauthenticated protocol.
+      AWS_EC2_METADATA_SERVICE_ENDPOINT: http://169.254.169.254
+      # The bucket this app writes to. Kept in compose so a wrong bucket cannot
+      # come from an operator-editable file.
+      S3_UPLOAD_BUCKET: cricketapp-uploads-crizz
     depends_on:
       cricketdb:
         condition: service_healthy
