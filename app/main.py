@@ -36,8 +36,40 @@ API_V1_PREFIX = "/v1"
 API_ALIAS_PREFIX = "/api"
 
 
+DEV_ORIGIN_REGEX = (
+    r"^http://(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.\d{1,3}\.\d{1,3}"
+    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}):\d{2,5}$"
+)
+
+
 def _split_origins(raw: str) -> list[str]:
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    """Split a comma-separated CORS_ORIGINS value into a clean origin list.
+
+    Entries are normalised because browsers compare the Origin header byte for
+    byte against Access-Control-Allow-Origin. A trailing slash, a missing
+    scheme, or a stray space therefore silently fails to match and the request
+    is rejected. Normalising here means one sloppy value in .env does not look
+    like a mysterious CORS bug in the browser.
+    """
+    origins: list[str] = []
+    for raw_origin in raw.split(","):
+        origin = raw_origin.strip().strip('"').strip("'").strip()
+        if not origin:
+            continue
+        if origin == "*":
+            # Valid only without credentials; see the middleware comment below.
+            origins.append(origin)
+            continue
+        if "://" not in origin:
+            origin = f"https://{origin}"
+        scheme, _, host = origin.partition("://")
+        host = host.split("/")[0].rstrip("/")
+        if not host:
+            continue
+        rebuilt = f"{scheme.lower()}://{host.lower()}"
+        if rebuilt not in origins:
+            origins.append(rebuilt)
+    return origins
 
 
 def _cors_origins() -> list[str]:
@@ -60,8 +92,15 @@ def _cors_origin_regex() -> str | None:
     Needed for cases a literal list cannot express: a large set of preview
     subdomains, or any host under a domain you control. Kept separate from
     CORS_ORIGINS so the common case stays a plain list a reviewer can read.
+
+    When it is unset we fall back to DEV_ORIGIN_REGEX so that a Vite dev server
+    which auto-increments its port (5173 busy -> 5174, 5175, ...) is not locked
+    out. The port is matched, not fixed at 5173, which was the previous
+    behaviour and the cause of intermittent CORS failures during development.
+    Restricted to http on private/loopback hosts, so this cannot widen the
+    allow-list to a public https origin.
     """
-    return os.getenv("CORS_ORIGINS_REGEX", "").strip() or None
+    return os.getenv("CORS_ORIGINS_REGEX", "").strip() or DEV_ORIGIN_REGEX
 
 
 app.add_middleware(

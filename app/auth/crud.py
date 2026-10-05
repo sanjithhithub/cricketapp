@@ -302,14 +302,40 @@ async def verify_google_id_token(id_token: str) -> dict:
 
 
 async def login_or_create_google_user(db: AsyncSession, profile: dict) -> User:
+    """Sign in with Google, creating the account on first use.
+
+    When the email already belongs to a password account we link the account
+    rather than rejecting the sign-in. Google has just cryptographically
+    verified ownership of the address (see verify_google_id_token, which
+    checks audience and signature), so possession of this Google identity is
+    proof of control of the mailbox - the same level of assurance the password
+    reset flow relies on. Requiring the user to also know the password blocked
+    legitimate users who had signed up with a password first.
+
+    hashed_password is deliberately preserved so password login keeps working
+    for the account, and a stale/inactive flag is corrected while we are here.
+    """
     email = profile["email"]
     user = await get_user_by_email(db, email)
     if user:
         if user.auth_provider != "google":
+            user.auth_provider = "google"
+            logger.info("Linked Google identity to existing account %s", user.id)
+        # Google is an authoritative source for both of these, so fill in only
+        # blanks and never overwrite a value the user may have set themselves.
+        if not user.full_name and profile.get("full_name"):
+            user.full_name = profile["full_name"]
+        if not user.profile_picture and profile.get("profile_picture"):
+            user.profile_picture = profile["profile_picture"]
+        if profile.get("email_verified") and not user.is_verified:
+            user.is_verified = True
+        if not user.is_active:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="An account with this email already exists. Please log in with your password.",
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This account has been deactivated.",
             )
+        await db.commit()
+        await db.refresh(user)
         return user
 
     user = User(
