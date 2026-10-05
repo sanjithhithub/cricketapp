@@ -32,3 +32,10 @@ uploads/
 # Local deploy keys, never commit
 .keys/
 *.pem
+
+# Throwaway diagnostic scripts and exports from ad-hoc debugging sessions. These
+# are scratch files, not part of the app, and one of them was a 1.8 MB database
+# export that `git add -A` nearly staged. Ignoring them also keeps ruff's
+# repo-wide checks from failing on files nobody is maintaining.
+tmp_*
+
