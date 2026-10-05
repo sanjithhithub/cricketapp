@@ -1,6 +1,3 @@
-import os
-import shutil
-
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,9 +11,11 @@ from app.players.crud import (
     get_available_players_for_team,
 )
 from app.players.schemas import PlayerDropdownItem, TeamPlayerByPhone
+from app.storage import InvalidImage, image_key, put_image
 from app.teams.crud import (
     create_team,
     delete_team,
+    get_team,
     get_team_detail,
     get_team_options,
     get_team_squad,
@@ -24,7 +23,6 @@ from app.teams.crud import (
     replace_team,
     set_team_captains,
     update_team,
-    update_team_logo,
 )
 from app.teams.schemas import (
     PlayerBulkAssignResponse,
@@ -40,7 +38,6 @@ from app.teams.schemas import (
 )
 
 router = APIRouter(tags=["teams"])
-UPLOAD_DIR = "uploads/teams"
 
 
 @router.get("/teams", response_model=list[TeamListItem])
@@ -191,19 +188,24 @@ async def upload_team_logo(
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-    ext = os.path.splitext(file.filename)[1] if file.filename else ".png"
-    filename = f"team_{team_id}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
-
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-
-    team = await update_team_logo(db, team_id, file_path, current_user.id)
+    # Ownership is resolved before the upload so a 404 does not leave an orphan
+    # object in the bucket for every attempt against a missing team.
+    team = await get_team(db, team_id, current_user.id)
     if not team:
         raise HTTPException(404, "Team not found")
-    return {"logo": file_path}
+
+    # Key built from the team id and the sniffed content type only. The previous
+    # os.path.join(UPLOAD_DIR, filename) let a client-supplied filename carrying
+    # "../" segments write outside the uploads directory.
+    try:
+        key = image_key("teams", team_id, file.content_type or "")
+        await put_image(key, await file.read(), file.content_type or "")
+    except InvalidImage as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    await db.commit()
+    await db.refresh(team)
+    return {"logo": key}
 
 
 @router.get("/teams/{team_id}/available-players", response_model=list[PlayerDropdownItem])

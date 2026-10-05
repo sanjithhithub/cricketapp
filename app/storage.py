@@ -31,10 +31,97 @@ def get_client():
 
 
 def object_url(key: str) -> str:
-    """Public URL for an object served through CloudFront or direct S3.
+    """Direct S3 URL. Not readable on its own: the bucket blocks public access.
 
-    The bucket has Block all public access enabled, so these URLs are not
-    readable without a signature. Images should be served through CloudFront or
-    via a presigned URL instead; this helper only builds the location string.
+    Kept for logging and for identifying which object a record points at. Use
+    presigned_url for anything a browser has to load.
     """
     return f"https://{BUCKET}.s3.{REGION}.amazonaws.com/{key}"
+
+
+def presigned_url(key: str, expires: int = 3600) -> str:
+    """Time-limited URL a browser can load without AWS credentials.
+
+    Needed because Block all public access is enabled, so a plain S3 URL returns
+    403. Until CloudFront is in front of the bucket this is how images reach the
+    client. expires is capped by the caller's own need, not by S3, but keep it
+    short: every request that uses one of these spends a signature.
+    """
+    return get_client().generate_presigned_url(
+        "get_object",
+        Params={"Bucket": BUCKET, "Key": key},
+        ExpiresIn=expires,
+    )
+
+
+# Only formats the app actually renders. The extension is derived from the
+# detected content type rather than from the client-supplied filename, so a
+# caller cannot choose the stored type by naming the file.
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+class InvalidImage(ValueError):
+    """Raised when an upload is not an allowed image or is too large."""
+
+
+def image_key(prefix: str, entity_id: int, content_type: str) -> str:
+    """Build the S3 key for an uploaded image.
+
+    The key is built entirely from prefix and a database id. Nothing from the
+    client-supplied filename reaches the key, which is what closes a path
+    traversal: a request naming "x/../../evil.py" cannot escape the prefix
+    because the filename is never used.
+
+    prefix is still caller-supplied, so it is constrained to a flat token.
+    """
+    suffix = ALLOWED_IMAGE_TYPES.get(content_type)
+    if suffix is None:
+        allowed = ", ".join(sorted(ALLOWED_IMAGE_TYPES))
+        raise InvalidImage(f"Unsupported image type. Allowed: {allowed}")
+
+    if not prefix or "/" in prefix or "\\" in prefix or prefix in {".", ".."}:
+        raise InvalidImage("Invalid upload prefix")
+
+    return f"{prefix}/{entity_id}{suffix}"
+
+
+async def put_image(key: str, data: bytes, content_type: str) -> None:
+    """Upload image bytes to S3.
+
+    ContentType is set explicitly because presigned GETs are served with the
+    stored content type. Without it a browser receives application/octet-stream
+    and downloads the file rather than rendering it.
+    """
+    if len(data) > MAX_IMAGE_BYTES:
+        raise InvalidImage(f"Image exceeds {MAX_IMAGE_BYTES // (1024 * 1024)}MB limit")
+
+    get_client().put_object(
+        Bucket=BUCKET,
+        Key=key,
+        Body=data,
+        ContentType=content_type,
+    )
+
+
+async def read_image(key: str) -> bytes | None:
+    """Fetch object bytes, or None if the object is missing.
+
+    Returns None rather than raising so a deleted or migrated-away image
+    degrades to a broken <img> instead of a 500 on the page that lists it.
+    """
+    from botocore.exceptions import ClientError
+
+    try:
+        response = get_client().get_object(Bucket=BUCKET, Key=key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
+            return None
+        raise
+    return response["Body"].read()

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +41,7 @@ from app.players.schemas import (
     TeamAssignment,
     TeamAssignmentUpdate,
 )
+from app.storage import InvalidImage, image_key, put_image
 from app.teams.models import PlayerTeamAssignment, Team
 
 router = APIRouter(tags=["players"])
@@ -433,3 +434,34 @@ async def remove_player_from_team_endpoint(
     removed = await remove_player_from_team(db, player_id, team_id, current_user.id)
     if not removed:
         raise HTTPException(404, "Player not found in this team")
+
+
+@router.post("/players/{player_id}/upload-profile-image")
+async def upload_player_profile_image(
+    player_id: int,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    # Ownership is checked before the upload so a 404 does not cost an S3 write
+    # on every attempt against a player the caller does not own.
+    result = await db.execute(
+        select(Player).where(Player.id == player_id, Player.user_id == current_user.id)
+    )
+    player = result.scalar_one_or_none()
+    if not player:
+        raise HTTPException(404, "Player not found")
+
+    # The key comes from the database id and the sniffed content type. The
+    # client-supplied filename is never used, so it cannot traverse out of the
+    # prefix the way the previous os.path.join(UPLOAD_DIR, filename) could.
+    try:
+        key = image_key("players", player_id, file.content_type or "")
+        await put_image(key, await file.read(), file.content_type or "")
+    except InvalidImage as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    player.profile_image = key
+    await db.commit()
+    await db.refresh(player)
+    return {"profile_image": key}
