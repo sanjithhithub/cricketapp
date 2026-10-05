@@ -1,9 +1,10 @@
 import os
 from pathlib import PurePosixPath
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
@@ -140,16 +141,35 @@ UPLOADS_DIR = "uploads"
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 
+def _cdn_base_url() -> str:
+    """CloudFront base URL for uploads, from UPLOADS_CDN_BASE_URL.
+
+    Unset means CloudFront is not configured yet, and uploads are streamed from
+    S3 by this app instead. Kept as a runtime lookup rather than a constant so
+    flipping it on is a .env change and a container restart, with no code deploy
+    and no window where the two halves disagree about the URL shape.
+    """
+    return os.getenv("UPLOADS_CDN_BASE_URL", "").strip().rstrip("/")
+
+
 @app.get("/uploads/{key:path}", include_in_schema=False)
 async def serve_upload(key: str):
-    """Stream an upload out of S3.
+    """Serve an upload, redirecting to CloudFront when it is configured.
 
     Replaces the StaticFiles mount, which served only the local uploads
     directory and therefore 404'd every image once uploads moved to the bucket.
-    The bucket keeps Block all public access on, so the bytes have to be proxied
-    here rather than linked directly. CloudFront in front of the bucket removes
-    this hop later; until then this keeps existing <img src> URLs working
-    unchanged, since the stored key is the same string the old path used.
+
+    With UPLOADS_CDN_BASE_URL set, the response is a 307 to the CDN and the
+    bytes never touch this container, so image views stop consuming API CPU on a
+    small instance. Browsers follow a redirect inside <img src>, so the stored
+    key and every existing <img src> URL stay exactly as they are and the
+    frontend needs no change.
+
+    A file found on disk is still served from disk even when the CDN is on. Those
+    are the pre-migration leftovers: the object is not in the bucket, so a
+    redirect would trade a 200 for a 404. Redirecting without checking would be
+    worse, and an S3 HEAD to confirm the object exists would reintroduce the
+    per-request API call this is meant to remove.
 
     The key is resolved and rejected before any S3 call: it must stay inside the
     bucket, which is checked with PurePosixPath rather than string matching so
@@ -180,6 +200,12 @@ async def serve_upload(key: str):
     bucket_key = normalized
     if bucket_key.startswith("uploads/"):
         bucket_key = bucket_key[len("uploads/") :]
+
+    cdn_base = _cdn_base_url()
+    if cdn_base:
+        # quote() keeps the key from contributing raw "?" or "#" to the URL.
+        # "/" is left readable because it is the key's own path separator.
+        return RedirectResponse(f"{cdn_base}/{quote(bucket_key, safe='/')}", status_code=307)
 
     data = await read_image(bucket_key)
     if data is None:
