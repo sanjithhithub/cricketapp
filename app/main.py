@@ -1,8 +1,9 @@
 import os
+from pathlib import PurePosixPath
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
@@ -26,6 +27,7 @@ from app.schemas import (
 )
 from app.scoring.routes import router as scoring_router
 from app.seed import seed_levels, seed_locations
+from app.storage import read_image
 from app.teams.routes import router as teams_router
 
 app = FastAPI(title="CricketApp", version="1.0.0")
@@ -136,11 +138,70 @@ for router, deps in routers:
 
 UPLOADS_DIR = "uploads"
 os.makedirs(UPLOADS_DIR, exist_ok=True)
-app.mount(
-    "/uploads",
-    StaticFiles(directory=UPLOADS_DIR, check_dir=False),
-    name="uploads",
-)
+
+
+@app.get("/uploads/{key:path}", include_in_schema=False)
+async def serve_upload(key: str):
+    """Stream an upload out of S3.
+
+    Replaces the StaticFiles mount, which served only the local uploads
+    directory and therefore 404'd every image once uploads moved to the bucket.
+    The bucket keeps Block all public access on, so the bytes have to be proxied
+    here rather than linked directly. CloudFront in front of the bucket removes
+    this hop later; until then this keeps existing <img src> URLs working
+    unchanged, since the stored key is the same string the old path used.
+
+    The key is resolved and rejected before any S3 call: it must stay inside the
+    bucket, which is checked with PurePosixPath rather than string matching so
+    encoded traversal like "..%2f..%2fetc" cannot slip through. Note FastAPI has
+    already URL-decoded the path segment by this point.
+    """
+    candidate = PurePosixPath(key)
+
+    # Rejects absolute paths, "..", and anything with an empty or dot segment.
+    # PurePosixPath("a/../../b").parts contains "..", so this is sufficient.
+    if ".." in candidate.parts or candidate.is_absolute():
+        raise HTTPException(400, "Invalid key")
+    if not candidate.parts:
+        raise HTTPException(400, "Invalid key")
+
+    normalized = candidate.as_posix()
+
+    # Legacy records still point at the old local layout, e.g.
+    # "uploads/teams/team_16.png" written before uploads moved to S3.
+    legacy = os.path.join(UPLOADS_DIR, normalized)
+    if os.path.isfile(legacy) and os.path.abspath(legacy).startswith(
+        os.path.abspath(UPLOADS_DIR) + os.sep
+    ):
+        with open(legacy, "rb") as handle:
+            return Response(content=handle.read(), media_type="image/png")
+
+    # New records store the bare S3 key, e.g. "teams/16.png".
+    bucket_key = normalized
+    if bucket_key.startswith("uploads/"):
+        bucket_key = bucket_key[len("uploads/") :]
+
+    data = await read_image(bucket_key)
+    if data is None:
+        raise HTTPException(404, "Not found")
+
+    suffix = os.path.splitext(bucket_key)[1].lower()
+    media_type = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(suffix)
+
+    if media_type is None:
+        raise HTTPException(415, "Unsupported media type")
+
+    return Response(
+        content=data,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
 
 
 @app.on_event("startup")
