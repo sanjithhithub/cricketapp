@@ -28,6 +28,13 @@ ORIGIN_CASES = [
     ("https://cricketapp.in", "https://app.cricketapp.in", False),
     # Wildcard is preserved verbatim for the no-credentials case.
     ("*", "*", True),
+    # AWS Amplify gives every branch its own hostname, so the allow-list has to
+    # cover the branch pattern rather than one literal host.
+    (
+        "https://main.d3hykm7kymvqjc.amplifyapp.com",
+        "https://pr42.d3hykm7kymvqjc.amplifyapp.com",
+        False,
+    ),
     # Non-default dev ports must be accepted.
     (None, "http://localhost:5174", True),
     (None, "http://127.0.0.1:5175", True),
@@ -48,6 +55,39 @@ def test_origin_allow_list(monkeypatch, configured, origin, expected):
     else:
         monkeypatch.setenv("CORS_ORIGINS", configured)
     monkeypatch.delenv("CORS_ORIGINS_REGEX", raising=False)
+
+    origins = main_module._cors_origins()
+    regex = main_module._cors_origin_regex()
+    allowed = origin in origins or bool(regex is not None and re.match(regex, origin))
+    assert allowed is expected
+
+
+AMPLIFY_REGEX = r"^https://[a-z0-9-]+\.d3hykm7kymvqjc\.amplifyapp\.com$"
+
+# The frontend is hosted on AWS Amplify, which assigns a distinct hostname per
+# branch. The allow-list must therefore cover the branch pattern, not one host.
+AMPLIFY_CASES = [
+    # Branches of this app are allowed.
+    ("https://main.d3hykm7kymvqjc.amplifyapp.com", True),
+    ("https://pr42.d3hykm7kymvqjc.amplifyapp.com", True),
+    ("https://feature-login.d3hykm7kymvqjc.amplifyapp.com", True),
+    # A different Amplify app must not be admitted: any matched origin can read
+    # credentialed responses from our users.
+    ("https://main.someoneelse.amplifyapp.com", False),
+    ("https://evil.amplifyapp.com", False),
+    # The bare app-id host is not a branch and stays out.
+    ("https://d3hykm7kymvqjc.amplifyapp.com", False),
+    # Amplify serves over https; http must not match.
+    ("http://main.d3hykm7kymvqjc.amplifyapp.com", False),
+    # Suffix trick on our own apex.
+    ("https://cricketapp.in.evil.com", False),
+]
+
+
+@pytest.mark.parametrize("origin, expected", AMPLIFY_CASES)
+def test_amplify_branch_origins(monkeypatch, origin, expected):
+    monkeypatch.setenv("CORS_ORIGINS", "https://cricketapp.in")
+    monkeypatch.setenv("CORS_ORIGINS_REGEX", AMPLIFY_REGEX)
 
     origins = main_module._cors_origins()
     regex = main_module._cors_origin_regex()
