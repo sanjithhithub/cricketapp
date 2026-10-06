@@ -357,7 +357,7 @@ def test_innings_end_all_out():
         assert card.completed is True
         assert card.end_reason == "all_out"
         assert card.wickets == 10
-        assert card.order_exhausted is False
+        assert card.awaiting_batsman is False
 
         with pytest.raises(InningsEndedError):
             await ball(engine, card.striker_id, card.non_striker_id)
@@ -521,7 +521,6 @@ def test_order_exhaustion_leaves_a_vacant_slot_not_a_finished_innings():
         assert card.end_reason is None
         assert card.wickets == 1
         assert card.awaiting_batsman is True
-        assert card.order_exhausted is True
         # The dismissed non-striker is gone, not still listed at the crease.
         assert card.striker_id == 1
         assert card.non_striker_id is None
@@ -582,7 +581,6 @@ def test_manual_pick_resumes_the_innings():
         card = await engine.get_scorecard(7)
         assert card.completed is False
         assert card.awaiting_batsman is False
-        assert card.order_exhausted is False
         assert (card.striker_id, card.non_striker_id) == (1, 3)
 
         await ball(engine, 1, 3, runs_batsman=1)

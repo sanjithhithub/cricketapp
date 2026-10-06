@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api_docs import BAD_REQUEST, CONFLICT, NOT_FOUND
 from app.auth.models import User
 from app.auth.security import get_current_user, require_admin
 from app.database import get_db
@@ -33,6 +34,13 @@ from app.scoring.schemas import (
 router = APIRouter(tags=["scoring"])
 
 
+# Both codes show up on the scoring routes and neither is interchangeable with the
+# other: 400 is "this ball is not legal", 409 is "this innings is over, or the
+# match is, and the scorecard is final". A client that retries a 400 is right; a
+# client that retries a 409 will never succeed and must refresh instead.
+SCORING_RESPONSES = {"400": BAD_REQUEST, "409": CONFLICT}
+
+
 def _map_engine_error(exc: ScoreEngineError) -> HTTPException:
     if isinstance(exc, InningsEndedError):
         return HTTPException(409, str(exc))
@@ -52,7 +60,12 @@ def _to_delivery_input(data: DeliveryCreate) -> DeliveryInput:
     )
 
 
-@router.post("/matches/{match_id}/deliveries", response_model=ScorecardResponse, status_code=201)
+@router.post(
+    "/matches/{match_id}/deliveries",
+    response_model=ScorecardResponse,
+    status_code=201,
+    responses=SCORING_RESPONSES,
+)
 async def submit_delivery(
     match_id: int,
     data: DeliveryCreate,
@@ -95,7 +108,11 @@ async def submit_delivery(
     return response
 
 
-@router.post("/matches/{match_id}/batting-order", response_model=ScorecardResponse)
+@router.post(
+    "/matches/{match_id}/batting-order",
+    response_model=ScorecardResponse,
+    responses=SCORING_RESPONSES,
+)
 async def add_next_batsman(
     match_id: int,
     data: AddBatsmanRequest,
@@ -126,7 +143,11 @@ async def add_next_batsman(
     return ScorecardResponse.model_validate(scorecard)
 
 
-@router.post("/matches/{match_id}/start-innings", response_model=ScorecardResponse)
+@router.post(
+    "/matches/{match_id}/start-innings",
+    response_model=ScorecardResponse,
+    responses=SCORING_RESPONSES,
+)
 async def start_innings_endpoint(
     match_id: int,
     data: StartInningsRequest,
@@ -151,7 +172,11 @@ async def start_innings_endpoint(
     return ScorecardResponse.model_validate(scorecard)
 
 
-@router.get("/matches/{match_id}/scorecard", response_model=ScorecardResponse)
+@router.get(
+    "/matches/{match_id}/scorecard",
+    response_model=ScorecardResponse,
+    responses={"404": NOT_FOUND},
+)
 async def get_match_scorecard(
     match_id: int,
     current_user: User = Depends(get_current_user),

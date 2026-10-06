@@ -71,6 +71,36 @@ class TokenOut(BaseModel):
     expires_in: int
 
 
+class RefreshTokenRequest(BaseModel):
+    """Exchange a refresh token for a new access token.
+
+    The refresh token travels in the body rather than the Authorization header,
+    because the header is where the *expired* access token goes. Reusing it would
+    mean a client has to strip the bad credential before it can ask for a good
+    one.
+    """
+
+    refresh_token: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "The `refresh_token` from a previous login. Single use: each call "
+            "returns a new one, and the token sent here cannot be used again."
+        ),
+    )
+
+
+class RefreshTokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    refresh_expires_in: int = Field(
+        ...,
+        description="Seconds until the new refresh token expires.",
+    )
+
+
 class UserOut(BaseModel):
     id: int
     email: str
@@ -88,4 +118,33 @@ class UserOut(BaseModel):
 
 
 class LoginResponse(TokenOut):
+    """The body of every operation that signs a user in.
+
+    Carries both tokens. ``access_token`` goes in the Authorization header and is
+    good for ``expires_in`` seconds; ``refresh_token`` is exchanged at
+    ``POST /v1/auth/refresh`` once the access token expires, without asking for the
+    password again. Without it a client can only react to a 401 by sending the
+    user back to the sign-in form, even though it is holding a credential that
+    would have worked.
+    """
+
     user: UserOut
+    refresh_token: str = Field(
+        ...,
+        description="Single-use. Store it wherever the access token is stored.",
+    )
+    refresh_expires_in: int = Field(
+        ...,
+        description="Seconds until `refresh_token` expires.",
+    )
+
+
+class LogoutResponse(BaseModel):
+    message: str
+    revoked: bool = Field(
+        ...,
+        description=(
+            "False when the token was already gone - expired, logged out, or "
+            "never issued. Logout is idempotent, so this is informational."
+        ),
+    )

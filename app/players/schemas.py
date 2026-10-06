@@ -1,8 +1,22 @@
 from datetime import date
 from typing import Any
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
+from app.enums import (
+    BATTING_POSITION_ALIASES,
+    BOWLING_TYPE_ALIASES,
+    HAND_ALIASES,
+    BattingHand,
+    BattingPosition,
+    BowlingHand,
+    BowlingType,
+    DuplicateMatchedOn,
+    DuplicateNextAction,
+    Gender,
+    SquadRole,
+    coerce_enum,
+)
 from app.players.identity import normalize_country_code, normalize_mobile
 
 
@@ -25,28 +39,35 @@ def _coerce_country_code(value: Any) -> str:
     return normalize_country_code(value)
 
 
+def _optional_enum(enum_cls, value: Any, aliases: dict[str, str] | None = None) -> str | None:
+    """``coerce_enum`` for an optional field: ``null`` passes through untouched."""
+    if value is None:
+        return None
+    return coerce_enum(enum_cls, value, aliases)
+
+
 class PlayerBase(BaseModel):
-    first_name: str
-    last_name: str
+    first_name: str = Field(..., min_length=1, max_length=50)
+    last_name: str = Field(..., min_length=1, max_length=50)
     date_of_birth: date
-    gender: str
-    profile_image: str | None = None
-    batting_hand: str
-    batting_position: str
-    bowling_hand: str
-    bowling_type: str
+    gender: Gender
+    profile_image: str | None = Field(None, max_length=500)
+    batting_hand: BattingHand
+    batting_position: BattingPosition
+    bowling_hand: BowlingHand
+    bowling_type: BowlingType
     country_id: int
     state_id: int
     city_id: int
-    height: float
-    weight: float
-    country_code: str
+    height: float = Field(..., gt=0, description="Height in centimetres.")
+    weight: float = Field(..., gt=0, description="Weight in kilograms.")
+    country_code: str = Field(..., max_length=5, description="Dial code, with the plus sign.")
     # Optional: a player may be registered before a number is known, and two
     # players may share one. Both cases are handled explicitly - see
     # app.players.identity and the duplicate-check endpoint - rather than by
     # pretending the number is a unique key.
-    mobile_number: str | None = None
-    email: str
+    mobile_number: str | None = Field(None, max_length=20)
+    email: str = Field(..., max_length=100)
 
     @field_validator("mobile_number", mode="before")
     @classmethod
@@ -68,78 +89,39 @@ class PlayerBase(BaseModel):
             raise ValueError("name parts cannot be empty")
         return v
 
-    @field_validator("gender")
+    # Every enum field normalises on the way in, before Pydantic picks the member,
+    # so a client may send "left", "L" or "Left" and the row always stores one of
+    # the documented values. Normalising after the fact would be too late: by then
+    # the value is already an enum member and the aliases are gone.
+    @field_validator("gender", mode="before")
     @classmethod
     def validate_gender(cls, v):
-        v = v.lower()
-        if v not in ("male", "female", "other"):
-            raise ValueError("gender must be male, female, or other")
-        return v
+        return coerce_enum(Gender, v)
 
-    @field_validator("batting_hand")
+    @field_validator("batting_hand", mode="before")
     @classmethod
     def validate_batting_hand(cls, v):
-        mapping = {
-            "left": "Left",
-            "right": "Right",
-            "l": "Left",
-            "r": "Right",
-        }
-        if v.lower() in mapping:
-            return mapping[v.lower()]
-        raise ValueError("batting_hand must be Left or Right")
+        return coerce_enum(BattingHand, v, HAND_ALIASES)
 
-    @field_validator("batting_position")
+    @field_validator("batting_position", mode="before")
     @classmethod
     def validate_batting_position(cls, v):
-        mapping = {
-            "opening": "Opening",
-            "op": "Opening",
-            "middle": "Middle Order",
-            "mid": "Middle Order",
-            "tail": "Tail Ender",
-            "wk": "Wicket Keeper",
-            "wicket keeper": "Wicket Keeper",
-            "tail ender": "Tail Ender",
-            "middle order": "Middle Order",
-        }
-        if v.lower() in mapping:
-            return mapping[v.lower()]
-        raise ValueError(
-            "batting_position must be Opening, Middle Order, Tail Ender, or Wicket Keeper"
-        )
+        return coerce_enum(BattingPosition, v, BATTING_POSITION_ALIASES)
 
-    @field_validator("bowling_hand")
+    @field_validator("bowling_hand", mode="before")
     @classmethod
     def validate_bowling_hand(cls, v):
-        mapping = {
-            "left": "Left",
-            "right": "Right",
-            "l": "Left",
-            "r": "Right",
-        }
-        if v.lower() in mapping:
-            return mapping[v.lower()]
-        raise ValueError("bowling_hand must be Left or Right")
+        return coerce_enum(BowlingHand, v, HAND_ALIASES)
 
-    @field_validator("bowling_type")
+    @field_validator("bowling_type", mode="before")
     @classmethod
     def validate_bowling_type(cls, v):
-        mapping = {
-            "fast": "Fast",
-            "medium fast": "Medium Fast",
-            "mfast": "Medium Fast",
-            "medium": "Medium Fast",
-            "spin": "Spin",
-        }
-        if v.lower() in mapping:
-            return mapping[v.lower()]
-        raise ValueError("bowling_type must be Fast, Medium Fast, or Spin")
+        return coerce_enum(BowlingType, v, BOWLING_TYPE_ALIASES)
 
 
 class PlayerCreate(PlayerBase):
     team_id: int | None = None
-    role: str = "playing_11"
+    role: SquadRole = SquadRole.PLAYING_11
     # Set by the caller once a human has seen the duplicate candidates and
     # confirmed the registration anyway. Without it, a phone that is already
     # registered is reported back with the matching players instead of being
@@ -151,16 +133,14 @@ class PlayerCreate(PlayerBase):
     existing_player_id: int | None = None
     # A nickname / short form to attach to `existing_player_id` or to the new
     # player, so the short name resolves to the same player id.
-    alias: str | None = None
+    alias: str | None = Field(None, max_length=100)
 
-    @field_validator("role")
+    @field_validator("role", mode="before")
     @classmethod
     def validate_role(cls, v):
-        if v not in ("playing_11", "substitute", "bench"):
-            raise ValueError("role must be playing_11, substitute, or bench")
-        return v
+        return coerce_enum(SquadRole, v)
 
-    @field_validator("alias")
+    @field_validator("alias", mode="before")
     @classmethod
     def validate_alias(cls, v):
         if v is None:
@@ -174,23 +154,31 @@ class PlayerCreate(PlayerBase):
 
 
 class PlayerUpdate(BaseModel):
-    first_name: str | None = None
-    last_name: str | None = None
+    """A partial player update, validated exactly as creation is.
+
+    Every enum validator here used to be missing. That was not cosmetic: a PATCH
+    could write "Leftt" or "middle-order" into a row that POST would have
+    refused, and every later GET of that player then failed to serialise - the
+    bad value was only ever rejected on the way out.
+    """
+
+    first_name: str | None = Field(None, min_length=1, max_length=50)
+    last_name: str | None = Field(None, min_length=1, max_length=50)
     date_of_birth: date | None = None
-    gender: str | None = None
-    profile_image: str | None = None
-    batting_hand: str | None = None
-    batting_position: str | None = None
-    bowling_hand: str | None = None
-    bowling_type: str | None = None
+    gender: Gender | None = None
+    profile_image: str | None = Field(None, max_length=500)
+    batting_hand: BattingHand | None = None
+    batting_position: BattingPosition | None = None
+    bowling_hand: BowlingHand | None = None
+    bowling_type: BowlingType | None = None
     country_id: int | None = None
     state_id: int | None = None
     city_id: int | None = None
-    height: float | None = None
-    weight: float | None = None
-    country_code: str | None = None
-    mobile_number: str | None = None
-    email: str | None = None
+    height: float | None = Field(None, gt=0)
+    weight: float | None = Field(None, gt=0)
+    country_code: str | None = Field(None, max_length=5)
+    mobile_number: str | None = Field(None, max_length=20)
+    email: str | None = Field(None, max_length=100)
 
     @field_validator("mobile_number", mode="before")
     @classmethod
@@ -209,10 +197,35 @@ class PlayerUpdate(BaseModel):
     def strip_name(cls, v):
         if v is None:
             return None
-        v = " ".join(str(v).split())
+        v = " ".join(str(v or "").split())
         if not v:
             raise ValueError("name parts cannot be empty")
         return v
+
+    @field_validator("gender", mode="before")
+    @classmethod
+    def validate_gender(cls, v):
+        return _optional_enum(Gender, v)
+
+    @field_validator("batting_hand", mode="before")
+    @classmethod
+    def validate_batting_hand(cls, v):
+        return _optional_enum(BattingHand, v, HAND_ALIASES)
+
+    @field_validator("batting_position", mode="before")
+    @classmethod
+    def validate_batting_position(cls, v):
+        return _optional_enum(BattingPosition, v, BATTING_POSITION_ALIASES)
+
+    @field_validator("bowling_hand", mode="before")
+    @classmethod
+    def validate_bowling_hand(cls, v):
+        return _optional_enum(BowlingHand, v, HAND_ALIASES)
+
+    @field_validator("bowling_type", mode="before")
+    @classmethod
+    def validate_bowling_type(cls, v):
+        return _optional_enum(BowlingType, v, BOWLING_TYPE_ALIASES)
 
 
 class PlayerAliasOut(BaseModel):
@@ -242,10 +255,38 @@ class PlayerTeamInfo(BaseModel):
     team_name: str
     level_id: int
     level_name: str
-    role: str
+    role: SquadRole
 
     class Config:
         from_attributes = True
+
+
+class PlayerTeamAssignmentResponse(BaseModel):
+    """201 from ``POST /players/{player_id}/teams``."""
+
+    message: str
+    assignment: PlayerTeamInfo
+
+
+class PlayerTeamRoleResponse(BaseModel):
+    """200 from ``PATCH /players/{player_id}/teams/{team_id}``."""
+
+    message: str
+    player_id: int
+    team_id: int
+    role: SquadRole
+
+
+class PlayerProfileImageResponse(BaseModel):
+    """200 from ``POST /players/{player_id}/upload-profile-image``.
+
+    ``profile_image`` is a root-relative path (``/uploads/players/32.png``),
+    routable as-is from any page and also the location the CDN redirect serves
+    from.
+    """
+
+    player_id: int
+    profile_image: str
 
 
 class PlayerCreateResponse(PlayerResponse):
@@ -258,6 +299,11 @@ class PlayerCreateResponse(PlayerResponse):
     linked_existing: bool = False
     # Set when the name matches players who already exist and the number did not.
     duplicate_name_warning: str | None = None
+    # The nickname that was accepted with this registration, echoed back. It was
+    # previously accepted on input and then dropped from the response, so a client
+    # could create a player with an alias and never learn which one it got; it is
+    # also readable later from `aliases` on the player, or GET /players/{id}/aliases.
+    alias: str | None = None
 
 
 class ResendOTPResponse(BaseModel):
@@ -268,25 +314,21 @@ class ResendOTPResponse(BaseModel):
 class TeamAssignment(BaseModel):
     team_id: int
     level_id: int
-    role: str = "playing_11"
+    role: SquadRole = SquadRole.PLAYING_11
 
-    @field_validator("role")
+    @field_validator("role", mode="before")
     @classmethod
     def validate_role(cls, v):
-        if v not in ("playing_11", "substitute", "bench"):
-            raise ValueError("role must be playing_11, substitute, or bench")
-        return v
+        return coerce_enum(SquadRole, v)
 
 
 class TeamAssignmentUpdate(BaseModel):
-    role: str
+    role: SquadRole
 
-    @field_validator("role")
+    @field_validator("role", mode="before")
     @classmethod
     def validate_role(cls, v):
-        if v not in ("playing_11", "substitute", "bench"):
-            raise ValueError("role must be playing_11, substitute, or bench")
-        return v
+        return coerce_enum(SquadRole, v)
 
 
 class PlayerDropdownItem(BaseModel):
@@ -296,10 +338,10 @@ class PlayerDropdownItem(BaseModel):
     last_name: str
     full_name: str = ""
     date_of_birth: date
-    gender: str
-    batting_hand: str
-    batting_position: str
-    bowling_type: str
+    gender: Gender
+    batting_hand: BattingHand
+    batting_position: BattingPosition
+    bowling_type: BowlingType
     country_code: str
     # Always masked here. A picker has to be able to tell two same-named players
     # apart, and player_code + photo + club do that without handing out a full
@@ -316,9 +358,11 @@ class PlayerDropdownItem(BaseModel):
 
 
 class TeamPlayerByPhone(BaseModel):
-    country_code: str
-    mobile_number: str
-    role: str = "playing_11"
+    country_code: str = Field(..., max_length=5)
+    mobile_number: str = Field(..., max_length=20)
+    # Adding by number offers no bench bucket: the point of the picker is to put
+    # a player on the field, and the bench is chosen from the squad afterwards.
+    role: SquadRole = SquadRole.PLAYING_11
 
     @field_validator("mobile_number", mode="before")
     @classmethod
@@ -333,12 +377,13 @@ class TeamPlayerByPhone(BaseModel):
     def validate_country_code(cls, v):
         return _coerce_country_code(v)
 
-    @field_validator("role")
+    @field_validator("role", mode="before")
     @classmethod
     def validate_role(cls, v):
-        if v not in ("playing_11", "substitute"):
+        role = coerce_enum(SquadRole, v)
+        if role not in (SquadRole.PLAYING_11.value, SquadRole.SUBSTITUTE.value):
             raise ValueError("role must be playing_11 or substitute")
-        return v
+        return role
 
 
 # --- duplicate detection -------------------------------------------------
@@ -357,6 +402,9 @@ class PlayerDuplicateRequest(BaseModel):
     mobile_number: str | None = None
     date_of_birth: date | None = None
     team_id: int | None = None
+    # Advisory only: two players genuinely share an email (a parent's address for
+    # two children), so a match is reported but never blocks registration.
+    email: str = ""
 
     @field_validator("mobile_number", mode="before")
     @classmethod
@@ -391,12 +439,37 @@ class PlayerDuplicateMatch(BaseModel):
     aliases: list[str] = []
     # Why this row was returned: "phone" (same normalised number), "name" (same
     # normalised full name) or "alias" (one name is a recorded nickname).
-    matched_on: str
+    matched_on: DuplicateMatchedOn
+
+
+class PlayerDuplicateDetail(BaseModel):
+    """The ``detail`` object of a 409 from ``POST /players``.
+
+    The duplicate flow is a conversation, not a rejection: the server reports who
+    it matched, says what the client should do next, and refuses to guess whether
+    two records are the same person. The client resolves it by resubmitting with
+    ``duplicate_confirmed: true`` (a different person who shares a name) or
+    ``existing_player_id`` (the same person, whose record is reused).
+    """
+
+    message: str
+    next_action: DuplicateNextAction
+    # Populated for confirm_same_person: the players already registered to this
+    # number, each carrying a masked number of their own.
+    phone_matches: list[PlayerDuplicateMatch] = []
+    # Populated for confirm_duplicate_name: players who share a normalised name.
+    name_matches: list[PlayerDuplicateMatch] = []
+    # Advisory only: players in this account who share the submitted email.
+    # Populated for next_action "none" - the client may show it and continue.
+    email_matches: list[PlayerDuplicateMatch] = []
 
 
 class PlayerDuplicateCheckResponse(BaseModel):
     phone_matches: list[PlayerDuplicateMatch] = []
     name_matches: list[PlayerDuplicateMatch] = []
+    # Advisory only: an email address already on file in this account. Reported
+    # but never blocks - two players may legitimately share an address.
+    email_matches: list[PlayerDuplicateMatch] = []
     # A normalised name that already exists. Warning only: the user is asked to
     # confirm and may proceed. Two people really can share a name.
     duplicate_name: bool = False
@@ -407,7 +480,7 @@ class PlayerDuplicateCheckResponse(BaseModel):
     # confirmation is required before creating a second nameless record.
     requires_confirmation: bool = False
     # "none" | "confirm_same_person" | "confirm_duplicate_name" | "shared_phone"
-    next_action: str = "none"
+    next_action: DuplicateNextAction = DuplicateNextAction.NONE
     message: str = ""
 
 
@@ -418,13 +491,18 @@ class PlayerLinkRequest(BaseModel):
     # Fill in details the existing record is missing (photo, club, DOB) rather
     # than overwriting what it already has.
     update_existing: bool = True
-    alias: str | None = None
+    alias: str | None = Field(None, max_length=100)
     team_id: int | None = None
-    role: str = "playing_11"
+    role: SquadRole = SquadRole.PLAYING_11
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def validate_role(cls, v):
+        return coerce_enum(SquadRole, v)
 
 
 class PlayerAliasCreate(BaseModel):
-    alias: str
+    alias: str = Field(..., max_length=100)
 
     @field_validator("alias")
     @classmethod

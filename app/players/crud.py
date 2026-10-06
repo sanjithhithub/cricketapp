@@ -32,7 +32,20 @@ PLAYING_XI_SIZE = 11
 CODE_GENERATION_ATTEMPTS = 5
 
 
-async def get_players(db: AsyncSession, user_id: int, skip: int = 0, limit: int = 100):
+async def get_players(
+    db: AsyncSession, user_id: int, skip: int = 0, limit: int = 100
+) -> tuple[list[Player], int]:
+    """One page of this account's players, and the total that page is drawn from.
+
+    The count is returned rather than left to the caller to guess, because a bare
+    array gives no way to tell "that is all of them" from "there are more past the
+    limit" - and a limit of 500 that silently truncates is how players disappear
+    from a list without anything failing.
+    """
+    total = int(
+        (await db.execute(select(func.count(Player.id)).where(Player.user_id == user_id))).scalar()
+        or 0
+    )
     # Newest first: a player someone has just registered has to be visible in
     # the list without the user knowing whether the default page covers them.
     result = await db.execute(
@@ -42,7 +55,7 @@ async def get_players(db: AsyncSession, user_id: int, skip: int = 0, limit: int 
         .offset(skip)
         .limit(limit)
     )
-    return result.scalars().all()
+    return list(result.scalars().all()), total
 
 
 async def get_player(db: AsyncSession, player_id: int, user_id: int):
@@ -126,33 +139,49 @@ async def add_player_alias(db: AsyncSession, player_id: int, alias: str) -> list
     return await get_player_aliases(db, player_id)
 
 
+def _search_predicate(query: str, user_id: int):
+    """The name/alias/code predicate a search counts and pages with.
+
+    One function so the count cannot drift from the page: if they were built
+    separately, ``X-Total-Count`` would describe a different query than the rows
+    returned beside it.
+    """
+    term = f"%{query.strip()}%"
+    alias_player_ids = select(PlayerAlias.player_id).where(PlayerAlias.alias_key.ilike(term))
+    return or_(
+        Player.first_name.ilike(term),
+        Player.last_name.ilike(term),
+        Player.player_code.ilike(term),
+        Player.id.in_(alias_player_ids),
+    )
+
+
 async def search_players(
     db: AsyncSession, query: str, user_id: int, skip: int = 0, limit: int = 100
-):
-    """Name search that also resolves nicknames.
+) -> tuple[list[Player], int]:
+    """Name search that also resolves nicknames, plus the total match count.
 
     A recorded alias matches the player it points at rather than creating a
     second one, so searching "Rohit" finds the player whose alias is "Rohit" even
     if their name field says something longer.
     """
-    term = f"%{query.strip()}%"
-    alias_player_ids = select(PlayerAlias.player_id).where(PlayerAlias.alias_key.ilike(term))
+    predicate = _search_predicate(query, user_id)
+    total = int(
+        (
+            await db.execute(
+                select(func.count(Player.id)).where(Player.user_id == user_id, predicate)
+            )
+        ).scalar()
+        or 0
+    )
     result = await db.execute(
         select(Player)
-        .where(
-            Player.user_id == user_id,
-            or_(
-                Player.first_name.ilike(term),
-                Player.last_name.ilike(term),
-                Player.player_code.ilike(term),
-                Player.id.in_(alias_player_ids),
-            ),
-        )
+        .where(Player.user_id == user_id, predicate)
         .order_by(Player.last_name, Player.first_name, Player.id)
         .offset(skip)
         .limit(limit)
     )
-    return result.scalars().all()
+    return list(result.scalars().all()), total
 
 
 async def get_unassigned_players(db: AsyncSession, user_id: int, skip: int = 0, limit: int = 100):
@@ -246,6 +275,27 @@ async def find_phone_matches(
     return await get_players_by_phone(db, country_code, mobile_number, user_id)
 
 
+async def find_email_matches(db: AsyncSession, email: str, user_id: int) -> list[Player]:
+    """Players already registered under the same email address.
+
+    An email may be shared (a parent's email for two children, a club's shared
+    address), so this is advisory only - the caller warns, it never blocks. The
+    comparison is case-insensitive so "A@x.com" and "a@x.com" are recognised as
+    the same inbox, and it stays inside the account so another account's record
+    is never surfaced.
+    """
+    needle = (email or "").strip().lower()
+    if not needle:
+        return []
+    result = await db.execute(
+        select(Player).where(
+            Player.user_id == user_id,
+            func.lower(func.trim(Player.email)) == needle,
+        )
+    )
+    return list(result.scalars().all())
+
+
 async def find_name_matches(
     db: AsyncSession,
     first_name: str,
@@ -287,6 +337,7 @@ async def check_for_duplicates(
     country_code: str = "",
     mobile_number: str | int | None = None,
     date_of_birth=None,
+    email: str = "",
 ) -> dict:
     """Collect possible duplicates for a registration that has not happened yet.
 
@@ -296,10 +347,14 @@ async def check_for_duplicates(
     """
     phone_matches = await find_phone_matches(db, country_code, mobile_number, user_id)
     name_matches = await find_name_matches(db, first_name, last_name, user_id)
+    email_matches = await find_email_matches(db, email, user_id)
 
     # A name match that is also the same phone is the same candidate, not two.
     phone_ids = {p.id for p in phone_matches}
     name_only = [p for p in name_matches if p.id not in phone_ids]
+    # Same for email matches: a player who matches on both the number and the
+    # address is reported once, under the number.
+    email_only = [p for p in email_matches if p.id not in phone_ids]
 
     if phone_matches:
         next_action = "confirm_same_person"
@@ -315,6 +370,13 @@ async def check_for_duplicates(
             "unique in this app - continue to register a separate player, or pick "
             "the existing player if this is the same person."
         )
+    elif email_only:
+        next_action = "none"
+        message = (
+            f"{len(email_only)} player(s) already have this email address. Emails "
+            "are not unique in this app either - continue if this is a separate "
+            "player, or pick the existing player if this is the same person."
+        )
     else:
         next_action = "none"
         message = "No possible duplicates found."
@@ -322,6 +384,7 @@ async def check_for_duplicates(
     return {
         "phone_matches": phone_matches,
         "name_matches": name_only,
+        "email_matches": email_only,
         "duplicate_name": bool(name_only),
         "phone_taken": bool(phone_matches),
         "requires_confirmation": bool(phone_matches or name_only),
@@ -390,9 +453,23 @@ async def create_player(db: AsyncSession, data: PlayerCreate, user_id: int):
     db.add(player)
     try:
         await db.flush()
-    except IntegrityError:
-        # Two concurrent registrations drew the same code. The unique index held;
-        # draw a new one and try again rather than failing the request.
+    except IntegrityError as exc:
+        # Only a player_code collision is recoverable here: the code is drawn
+        # randomly, so two concurrent registrations can land on the same draw and
+        # the unique index correctly refuses the second. Draw another code and
+        # try again rather than failing the request.
+        #
+        # Anything else - a NOT NULL failure, an FK reference to a row that does
+        # not exist, a constraint that was never meant to be retried - is rolled
+        # back and reported as a plain conflict instead of re-running the
+        # *identical* insert. The old code retried unconditionally, so a duplicate
+        # email (then unique) inserted twice, failed twice, and leaked a 500.
+        if "player_code" not in str(exc.orig).lower():
+            await db.rollback()
+            raise ValueError(
+                "The player could not be registered: it conflicts with an existing "
+                "record or constraint. Nothing was created."
+            ) from exc
         await db.rollback()
         player = Player(
             player_code=await _assign_new_player_code(db),
@@ -761,17 +838,20 @@ async def get_available_players_for_team(
     q: str | None = None,
     skip: int = 0,
     limit: int = 100,
-):
+) -> tuple[list[dict] | None, str | None, int]:
     """Players this user owns who are not on a squad at this level.
 
     The rows carry player_code, photo and current club alongside the name, and
     mask the phone number, because a dropdown is exactly where two same-named
     players have to be told apart and where a full number does not belong.
+
+    Returns ``(players, error, total)``; the total counts every match for this
+    query, not just this page.
     """
     team_result = await db.execute(select(Team).where(Team.id == team_id, Team.user_id == user_id))
     team = team_result.scalar_one_or_none()
     if not team:
-        return None, "Team not found"
+        return None, "Team not found", 0
 
     level_id = team.level_id
 
@@ -782,25 +862,19 @@ async def get_available_players_for_team(
         .scalar_subquery()
     )
 
+    where = [Player.id.notin_(assigned_subq), Player.user_id == user_id]
+    if q:
+        where.append(_search_predicate(q, user_id))
+
+    total = int((await db.execute(select(func.count(Player.id)).where(*where))).scalar() or 0)
+
     query = (
         select(Player, Country.name, State.name, City.name)
         .join(Country, Player.country_id == Country.id)
         .join(State, Player.state_id == State.id)
         .join(City, Player.city_id == City.id)
-        .where(Player.id.notin_(assigned_subq), Player.user_id == user_id)
+        .where(*where)
     )
-
-    if q:
-        term = f"%{q.strip()}%"
-        alias_ids = select(PlayerAlias.player_id).where(PlayerAlias.alias_key.ilike(term))
-        query = query.where(
-            or_(
-                Player.first_name.ilike(term),
-                Player.last_name.ilike(term),
-                Player.player_code.ilike(term),
-                Player.id.in_(alias_ids),
-            )
-        )
 
     query = query.order_by(Player.last_name, Player.first_name, Player.id).offset(skip).limit(limit)
     result = await db.execute(query)
@@ -831,7 +905,7 @@ async def get_available_players_for_team(
         )
 
     await _attach_team_names(db, players)
-    return players, None
+    return players, None, total
 
 
 async def _attach_team_names(db: AsyncSession, players: list[dict]) -> None:

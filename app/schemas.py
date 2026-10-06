@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, field_validator
 
 from app.players.identity import normalize_country_code
@@ -55,3 +57,14 @@ class OTPVerifyRequest(BaseModel):
 class OTPVerifyResponse(BaseModel):
     message: str
     verified: bool
+
+
+class HealthResponse(BaseModel):
+    """The liveness probe's body.
+
+    A literal rather than ``str`` so a monitor that polls this can be generated
+    against the spec and told, at compile time, that anything other than ``"ok"``
+    is not a healthy response.
+    """
+
+    status: Literal["ok"] = "ok"

@@ -663,7 +663,6 @@ def test_super_over_target_reached_ends_immediately():
 def _scorecard_fake(total: int, innings_number: int) -> SimpleNamespace:
     return SimpleNamespace(
         completed=True,
-        order_exhausted=False,
         total=total,
         innings_number=innings_number,
     )

@@ -39,6 +39,11 @@ class Player(Base):
         # index exists to make the duplicate check fast, not to forbid a second
         # row - the check is a prompt for a human to confirm, never a rejection.
         Index("ix_players_phone_e164", "phone_e164"),
+        # An email address is NOT unique either: a parent registers both children
+        # with one address, a club keeps a shared contact. Like the phone, it has
+        # an index for the duplicate check, never a uniqueness guarantee - the
+        # check is advisory and the registration always goes through.
+        Index("ix_players_email", "email"),
         Index("ix_players_name_lookup", "user_id", "last_name", "first_name"),
     )
 
@@ -66,7 +71,7 @@ class Player(Base):
     # duplicate detection compares; `mobile_number` is kept as the user typed it
     # for display.
     phone_e164: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    email: Mapped[str] = mapped_column(String(100), unique=True)
+    email: Mapped[str] = mapped_column(String(100))
     is_phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
 

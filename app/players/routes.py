@@ -1,7 +1,14 @@
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import storage
+from app.api_docs import (
+    BAD_REQUEST,
+    NOT_FOUND,
+    paginated_list_response,
+    set_pagination_headers,
+)
 from app.auth.models import User
 from app.auth.security import get_current_user, require_admin
 from app.database import get_db
@@ -33,15 +40,19 @@ from app.players.schemas import (
     PlayerCreate,
     PlayerCreateResponse,
     PlayerDuplicateCheckResponse,
+    PlayerDuplicateDetail,
     PlayerDuplicateMatch,
     PlayerDuplicateRequest,
+    PlayerProfileImageResponse,
     PlayerResponse,
+    PlayerTeamAssignmentResponse,
+    PlayerTeamInfo,
+    PlayerTeamRoleResponse,
     PlayerUpdate,
     ResendOTPResponse,
     TeamAssignment,
     TeamAssignmentUpdate,
 )
-from app.storage import InvalidImage, image_key, put_image
 from app.teams.models import PlayerTeamAssignment, Team
 
 router = APIRouter(tags=["players"])
@@ -101,29 +112,41 @@ def _can_reveal_phone(user: User, player: Player) -> bool:
     return user.role == "admin" or player.user_id == user.id
 
 
-@router.get("/players", response_model=list[PlayerResponse])
+@router.get(
+    "/players",
+    response_model=list[PlayerResponse],
+    responses=paginated_list_response("One page of this account's players."),
+)
 async def list_players(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    response: Response = None,
 ):
-    players = await get_players(db, user_id=current_user.id, skip=skip, limit=limit)
+    players, total = await get_players(db, user_id=current_user.id, skip=skip, limit=limit)
+    set_pagination_headers(response, total=total, skip=skip, limit=limit)
     # Listing is for browsing and picking, so numbers stay masked for everyone
     # who is not an admin. Open the single-player view to see one in full.
     reveal = current_user.role == "admin"
     return [await _to_response(db, p, reveal_phone=reveal) for p in players]
 
 
-@router.get("/players/search", response_model=list[PlayerResponse])
+@router.get(
+    "/players/search",
+    response_model=list[PlayerResponse],
+    responses=paginated_list_response("One page of players matching `q`."),
+)
 async def search_players_endpoint(
     q: str = Query(..., min_length=1, description="Search by name, nickname or player code"),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    response: Response = None,
 ):
-    players = await search_players(db, q, user_id=current_user.id, skip=skip, limit=limit)
+    players, total = await search_players(db, q, user_id=current_user.id, skip=skip, limit=limit)
+    set_pagination_headers(response, total=total, skip=skip, limit=limit)
     reveal = current_user.role == "admin"
     return [await _to_response(db, p, reveal_phone=reveal) for p in players]
 
@@ -168,10 +191,12 @@ async def check_player_duplicate_endpoint(
         country_code=data.country_code,
         mobile_number=data.mobile_number,
         date_of_birth=data.date_of_birth,
+        email=data.email,
     )
     return PlayerDuplicateCheckResponse(
         phone_matches=[await _duplicate_match(db, p, "phone") for p in result["phone_matches"]],
         name_matches=[await _duplicate_match(db, p, "name") for p in result["name_matches"]],
+        email_matches=[await _duplicate_match(db, p, "email") for p in result["email_matches"]],
         duplicate_name=result["duplicate_name"],
         phone_taken=result["phone_taken"],
         requires_confirmation=result["requires_confirmation"],
@@ -198,7 +223,37 @@ async def get_player_by_code_endpoint(
     return await _to_response(db, player, reveal_phone=_can_reveal_phone(current_user, player))
 
 
-@router.post("/players", response_model=PlayerCreateResponse, status_code=201)
+@router.post(
+    "/players",
+    response_model=PlayerCreateResponse,
+    status_code=201,
+    responses={
+        "400": BAD_REQUEST,
+        "409": {
+            "description": (
+                "Nothing was created. Either the registration matches someone on "
+                "file, or it cannot be carried out against the current state - the "
+                "squad is full, the playing XI is capped, or the team named in the "
+                "body does not exist.\n\n"
+                "Check for `detail.next_action`: when it is present the detail is "
+                "the structured duplicate payload and the flow is to show the "
+                "matches to a human, then resubmit with `duplicate_confirmed: "
+                "true` or `existing_player_id`. When it is absent, `detail` is a "
+                "plain sentence explaining what to change."
+            ),
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "anyOf": [
+                            {"$ref": "#/components/schemas/DuplicatePlayerConflict"},
+                            {"$ref": "#/components/schemas/ErrorResponse"},
+                        ]
+                    }
+                }
+            },
+        },
+    },
+)
 async def create_player_endpoint(
     data: PlayerCreate,
     current_user: User = Depends(require_admin),
@@ -212,15 +267,11 @@ async def create_player_endpoint(
         # the request conflicts with what is on file, not because it was invalid.
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            detail={
-                "message": str(e),
-                "next_action": "confirm_same_person",
-                "phone_matches": [
-                    # JSON, not a model: an HTTPException detail has to serialise.
-                    (await _duplicate_match(db, p, "phone")).model_dump(mode="json")
-                    for p in e.matches
-                ],
-            },
+            detail=PlayerDuplicateDetail(
+                message=str(e),
+                next_action="confirm_same_person",
+                phone_matches=[await _duplicate_match(db, p, "phone") for p in e.matches],
+            ).model_dump(mode="json"),
         )
     except DuplicateNameWarningError as e:
         # A name clash is a question, not a refusal. Handing it back as a 409 lets
@@ -228,17 +279,21 @@ async def create_player_endpoint(
         # duplicate_confirmed=true to proceed.
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            detail={
-                "message": str(e),
-                "next_action": "confirm_duplicate_name",
-                "name_matches": [
-                    (await _duplicate_match(db, p, "name")).model_dump(mode="json")
-                    for p in e.matches
-                ],
-            },
+            detail=PlayerDuplicateDetail(
+                message=str(e),
+                next_action="confirm_duplicate_name",
+                name_matches=[await _duplicate_match(db, p, "name") for p in e.matches],
+            ).model_dump(mode="json"),
         )
     except ValueError as e:
-        raise HTTPException(409, str(e))
+        # Not a duplicate: the squad is full, the playing XI is capped, or the team
+        # or linked player named in the body does not exist. Still a 409 - the
+        # request is well formed and cannot be carried out against the current
+        # state - but with a plain sentence, not the duplicate payload. Hence the
+        # `anyOf` on the 409 in this operation's responses: a client that gets a
+        # 409 must look for `next_action` and fall back to reading `detail` as a
+        # string when it is absent.
+        raise HTTPException(status.HTTP_409_CONFLICT, detail=str(e)) from e
 
     if data.duplicate_confirmed:
         duplicate_name_warning = (
@@ -269,6 +324,9 @@ async def create_player_endpoint(
         team_assignment=team_assignment,
         linked_existing=linked_existing,
         duplicate_name_warning=duplicate_name_warning,
+        # Echoed rather than dropped: the client can then show the nickname it
+        # just registered, and knows which one to expect in `aliases` later.
+        alias=data.alias or (base.aliases[0] if linked_existing and base.aliases else None),
     )
 
 
@@ -346,13 +404,29 @@ async def get_player_endpoint(
     return await _to_response(db, player, reveal_phone=_can_reveal_phone(current_user, player))
 
 
-@router.put("/players/{player_id}", response_model=PlayerResponse)
+@router.put(
+    "/players/{player_id}",
+    response_model=PlayerResponse,
+    deprecated=True,
+    summary="Replace a player (deprecated)",
+    description=(
+        "Deprecated: use `PATCH /players/{player_id}`. This takes the full "
+        "`PlayerCreate` body, so a partial update fails with a 422 listing every "
+        "field that is missing - which is the opposite of what a client sending "
+        "one changed field expects. Kept working so existing callers do not break."
+    ),
+)
 async def replace_player_endpoint(
     player_id: int,
     data: PlayerCreate,
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    """Full replacement of every mutable field on a player.
+
+    Prefer PATCH. A PUT here is a footgun precisely because its body is the
+    create schema: omitting one field is not "leave it alone", it is a 422.
+    """
     player = await replace_player(db, player_id, data, current_user.id)
     if not player:
         raise HTTPException(404, "Player not found")
@@ -383,7 +457,12 @@ async def delete_player_endpoint(
         raise HTTPException(404, "Player not found")
 
 
-@router.post("/players/{player_id}/teams", status_code=201)
+@router.post(
+    "/players/{player_id}/teams",
+    status_code=201,
+    response_model=PlayerTeamAssignmentResponse,
+    responses={"400": BAD_REQUEST},
+)
 async def assign_player_to_team_endpoint(
     player_id: int,
     data: TeamAssignment,
@@ -392,23 +471,37 @@ async def assign_player_to_team_endpoint(
 ):
     assignment, error = await assign_player_to_team(db, player_id, data, current_user.id)
     if error:
+        # The squad is full, the XI is capped, or the player already plays at this
+        # level. Every one of those is fixed by picking differently, not by a
+        # conversation about identity.
         raise HTTPException(400, error)
-    return {"message": "Player assigned to team successfully", "assignment": assignment}
+    return PlayerTeamAssignmentResponse(
+        message="Player assigned to team successfully", assignment=assignment
+    )
 
 
-@router.get("/players/{player_id}/teams")
+@router.get(
+    "/players/{player_id}/teams",
+    response_model=list[PlayerTeamInfo],
+    responses={"404": NOT_FOUND},
+)
 async def get_player_teams_endpoint(
     player_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """Every club this player currently plays for, at the level they play at."""
     player = await get_player(db, player_id, current_user.id)
     if not player:
         raise HTTPException(404, "Player not found")
     return await get_player_teams(db, player_id, current_user.id)
 
 
-@router.patch("/players/{player_id}/teams/{team_id}")
+@router.patch(
+    "/players/{player_id}/teams/{team_id}",
+    response_model=PlayerTeamRoleResponse,
+    responses={"400": BAD_REQUEST},
+)
 async def update_player_team_role_endpoint(
     player_id: int,
     team_id: int,
@@ -416,12 +509,22 @@ async def update_player_team_role_endpoint(
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    """Move a player between the playing XI, the substitutes and the bench.
+
+    Promoting into the XI is refused when it is already full, which is why this
+    can be a 400 and not only a 404.
+    """
     assignment, error = await update_player_team_role(
         db, player_id, team_id, data.role, current_user.id
     )
     if error:
-        raise HTTPException(404, error)
-    return {"message": f"Role updated to {data.role}"}
+        raise HTTPException(400, error)
+    return PlayerTeamRoleResponse(
+        message=f"Role updated to {assignment.role}",
+        player_id=player_id,
+        team_id=team_id,
+        role=assignment.role,
+    )
 
 
 @router.delete("/players/{player_id}/teams/{team_id}", status_code=204)
@@ -436,7 +539,11 @@ async def remove_player_from_team_endpoint(
         raise HTTPException(404, "Player not found in this team")
 
 
-@router.post("/players/{player_id}/upload-profile-image")
+@router.post(
+    "/players/{player_id}/upload-profile-image",
+    response_model=PlayerProfileImageResponse,
+    responses={"400": BAD_REQUEST},
+)
 async def upload_player_profile_image(
     player_id: int,
     file: UploadFile = File(...),
@@ -456,12 +563,13 @@ async def upload_player_profile_image(
     # client-supplied filename is never used, so it cannot traverse out of the
     # prefix the way the previous os.path.join(UPLOAD_DIR, filename) could.
     try:
-        key = image_key("players", player_id, file.content_type or "")
-        await put_image(key, await file.read(), file.content_type or "")
-    except InvalidImage as exc:
+        key = storage.image_key("players", player_id, file.content_type or "")
+        await storage.put_image(key, await file.read(), file.content_type or "")
+    except storage.InvalidImage as exc:
         raise HTTPException(400, str(exc)) from exc
 
-    player.profile_image = key
+    # Root-relative so the value works from a nested page ("/v1/players/17").
+    player.profile_image = f"/uploads/{key}"
     await db.commit()
     await db.refresh(player)
-    return {"profile_image": key}
+    return PlayerProfileImageResponse(player_id=player.id, profile_image=player.profile_image)

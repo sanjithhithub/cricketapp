@@ -1,14 +1,20 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+
+from app.enums import SquadRole, coerce_enum
+from app.players.schemas import PlayerTeamInfo
 
 
 class TeamBase(BaseModel):
-    name: str
-    short_name: str
-    logo: str | None = None
-    homeground: str
-    founder: str
-    founded_year: int
-    owner: str
+    # Lengths mirror the columns in app.teams.models, so a value that validates
+    # here is a value the database can hold - the server no longer accepts a
+    # request that Postgres would then truncate or reject.
+    name: str = Field(..., min_length=1, max_length=100)
+    short_name: str = Field(..., min_length=1, max_length=10)
+    logo: str | None = Field(None, max_length=500)
+    homeground: str = Field(..., min_length=1, max_length=200)
+    founder: str = Field(..., min_length=1, max_length=100)
+    founded_year: int = Field(..., ge=1800, le=2200)
+    owner: str = Field(..., min_length=1, max_length=200)
     country_id: int
     state_id: int
     city_id: int
@@ -20,13 +26,13 @@ class TeamCreate(TeamBase):
 
 
 class TeamUpdate(BaseModel):
-    name: str | None = None
-    short_name: str | None = None
-    logo: str | None = None
-    homeground: str | None = None
-    founder: str | None = None
-    founded_year: int | None = None
-    owner: str | None = None
+    name: str | None = Field(None, min_length=1, max_length=100)
+    short_name: str | None = Field(None, min_length=1, max_length=10)
+    logo: str | None = Field(None, max_length=500)
+    homeground: str | None = Field(None, min_length=1, max_length=200)
+    founder: str | None = Field(None, min_length=1, max_length=100)
+    founded_year: int | None = Field(None, ge=1800, le=2200)
+    owner: str | None = Field(None, min_length=1, max_length=200)
     country_id: int | None = None
     state_id: int | None = None
     city_id: int | None = None
@@ -47,6 +53,24 @@ class PlayerOnTeam(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class TeamLogoResponse(BaseModel):
+    """200 from ``POST /teams/{team_id}/upload-logo``.
+
+    ``logo`` is a root-relative path (``/uploads/teams/17.png``), routable as-is
+    from any page and also the location the CDN redirect serves from.
+    """
+
+    team_id: int
+    logo: str
+
+
+class TeamPlayerAddResponse(BaseModel):
+    """201 from ``POST /teams/{team_id}/players``."""
+
+    message: str
+    assignment: PlayerTeamInfo
 
 
 class TeamResponse(TeamBase):
@@ -99,7 +123,7 @@ class TeamBulkPlayerAdd(BaseModel):
     """
 
     player_ids: list[int]
-    role: str = "playing_11"
+    role: SquadRole = SquadRole.PLAYING_11
 
     @field_validator("player_ids")
     @classmethod
@@ -110,18 +134,16 @@ class TeamBulkPlayerAdd(BaseModel):
             raise ValueError("player_ids must be positive player ids")
         return v
 
-    @field_validator("role")
+    @field_validator("role", mode="before")
     @classmethod
     def validate_role(cls, v):
-        if v not in ("playing_11", "substitute", "bench"):
-            raise ValueError("role must be playing_11, substitute, or bench")
-        return v
+        return coerce_enum(SquadRole, v)
 
 
 class PlayerBulkAssignResponse(BaseModel):
     message: str
     team_id: int
-    role: str
+    role: SquadRole
     added_player_ids: list[int]
 
 
@@ -132,7 +154,7 @@ class SquadPlayer(BaseModel):
     last_name: str
     full_name: str = ""
     profile_image: str | None = None
-    role: str
+    role: SquadRole
     # Masked, not raw: a squad is a dropdown, and a dropdown is where a scorer
     # has to tell two same-named players apart. The last two digits are the part
     # that separates them. The full number stays on the player record, which is
@@ -169,10 +191,19 @@ class TeamCaptainsSet(BaseModel):
 
 
 class TeamCaptainsResponse(BaseModel):
+    """The captaincy that is now set on this team.
+
+    Both ids are required and nullable: they are always present in the body, and
+    ``null`` is how "this side has named no captain" is expressed. They used to be
+    optional, which meant a client reading ``captain_player_id`` after a clear
+    could get ``undefined`` - a value the client type did not allow and which no
+    amount of null-checking handled.
+    """
+
     message: str
     team_id: int
-    captain_player_id: int | None = None
-    vice_captain_player_id: int | None = None
+    captain_player_id: int | None
+    vice_captain_player_id: int | None
 
 
 class TeamSquadResponse(BaseModel):

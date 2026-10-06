@@ -1,7 +1,15 @@
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import storage
+from app.api_docs import (
+    BAD_REQUEST,
+    CONFLICT,
+    NOT_FOUND,
+    paginated_list_response,
+    set_pagination_headers,
+)
 from app.auth.models import User
 from app.auth.security import get_current_user, require_admin
 from app.database import get_db
@@ -11,7 +19,6 @@ from app.players.crud import (
     get_available_players_for_team,
 )
 from app.players.schemas import PlayerDropdownItem, TeamPlayerByPhone
-from app.storage import InvalidImage, image_key, put_image
 from app.teams.crud import (
     create_team,
     delete_team,
@@ -32,23 +39,35 @@ from app.teams.schemas import (
     TeamCreate,
     TeamDetailResponse,
     TeamListItem,
+    TeamLogoResponse,
     TeamOption,
+    TeamPlayerAddResponse,
     TeamResponse,
+    TeamSquadResponse,
     TeamUpdate,
 )
 
 router = APIRouter(tags=["teams"])
 
 
-@router.get("/teams", response_model=list[TeamListItem])
+@router.get(
+    "/teams",
+    response_model=list[TeamListItem],
+    responses=paginated_list_response("One page of this account's teams."),
+)
 async def list_teams(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     level_id: int | None = Query(None, description="Filter by team level"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    response: Response = None,
 ):
-    return await get_teams(db, user_id=current_user.id, skip=skip, limit=limit, level_id=level_id)
+    teams, total = await get_teams(
+        db, user_id=current_user.id, skip=skip, limit=limit, level_id=level_id
+    )
+    set_pagination_headers(response, total=total, skip=skip, limit=limit)
+    return teams
 
 
 @router.get("/teams/options", response_model=list[TeamOption])
@@ -60,18 +79,27 @@ async def list_team_options(
     return await get_team_options(db, user_id=current_user.id, level_id=level_id)
 
 
-@router.get("/teams/with-counts", response_model=list[TeamListItem])
+@router.get(
+    "/teams/with-counts",
+    response_model=list[TeamListItem],
+    responses=paginated_list_response("One page of this account's teams, with squad counts."),
+)
 async def list_teams_with_player_counts(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     level_id: int | None = Query(None, description="Filter by team level"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    response: Response = None,
 ):
-    return await get_teams(db, user_id=current_user.id, skip=skip, limit=limit, level_id=level_id)
+    teams, total = await get_teams(
+        db, user_id=current_user.id, skip=skip, limit=limit, level_id=level_id
+    )
+    set_pagination_headers(response, total=total, skip=skip, limit=limit)
+    return teams
 
 
-@router.post("/teams", response_model=TeamResponse, status_code=201)
+@router.post("/teams", response_model=TeamResponse, status_code=201, responses={"409": CONFLICT})
 async def create_team_endpoint(
     data: TeamCreate,
     current_user: User = Depends(require_admin),
@@ -96,47 +124,83 @@ async def get_team_endpoint(
     return team
 
 
-@router.get("/teams/{team_id}/squad")
+@router.get(
+    "/teams/{team_id}/squad",
+    response_model=TeamSquadResponse,
+    responses={"404": NOT_FOUND},
+)
 @router.get("/teams/{team_id}/players", include_in_schema=False)
 async def get_team_squad_endpoint(
     team_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """The squad split into playing XI, substitutes and bench.
+
+    An empty bucket is an empty list, never a missing key, so a client can render
+    the three sections without checking each one.
+    """
     squad = await get_team_squad(db, team_id, current_user.id)
     if not squad:
         raise HTTPException(404, "Team not found")
     return squad
 
 
-@router.put("/teams/{team_id}/captains", response_model=TeamCaptainsResponse)
+@router.put(
+    "/teams/{team_id}/captains",
+    response_model=TeamCaptainsResponse,
+    responses={"400": BAD_REQUEST},
+    summary="Name or clear the captaincy",
+    description=(
+        "Both ids are optional in the request: sending `null` for one clears that "
+        "title, so a squad can be left with neither. Both must be different people "
+        "and both must already be in the playing XI. The response always carries "
+        "both ids - `null` meaning that title is currently unset."
+    ),
+)
 async def set_team_captains_endpoint(
     team_id: int,
     data: TeamCaptainsSet,
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    result, error = await set_team_captains(
+    # Ownership is resolved here rather than inside the helper, so a missing team
+    # is a 404 and the helper's remaining failures - all of them squad-rule
+    # violations - are 400s. The helper's error message is its success message
+    # too, which is why the route checks the *result* for failure and never the
+    # message: checking the message made every successful request a 400.
+    if await get_team(db, team_id, current_user.id) is None:
+        raise HTTPException(404, "Team not found")
+
+    captains, message = await set_team_captains(
         db,
         team_id,
         data.captain_player_id,
         data.vice_captain_player_id,
         current_user.id,
     )
-    if error:
-        # 400 not 404: the squad rules were violated (same player twice, not in
-        # the XI, not on this squad). The client fixes it by picking differently.
-        raise HTTPException(400, error)
-    captain_id, vice_id = result
+    if captains is None:
+        raise HTTPException(400, message)
+    captain_id, vice_id = captains
     return TeamCaptainsResponse(
-        message=error,
+        message=message,
         team_id=team_id,
         captain_player_id=captain_id,
         vice_captain_player_id=vice_id,
     )
 
 
-@router.put("/teams/{team_id}", response_model=TeamResponse)
+@router.put(
+    "/teams/{team_id}",
+    response_model=TeamResponse,
+    deprecated=True,
+    summary="Replace a team (deprecated)",
+    description=(
+        "Deprecated: use `PATCH /teams/{team_id}`. This takes the full "
+        "`TeamCreate` body, so changing one field means resending all ten or "
+        "taking a 422 listing the nine you left out."
+    ),
+)
 async def replace_team_endpoint(
     team_id: int,
     data: TeamCreate,
@@ -153,7 +217,7 @@ async def replace_team_endpoint(
     return team
 
 
-@router.patch("/teams/{team_id}", response_model=TeamResponse)
+@router.patch("/teams/{team_id}", response_model=TeamResponse, responses={"409": CONFLICT})
 async def update_team_endpoint(
     team_id: int,
     data: TeamUpdate,
@@ -181,7 +245,11 @@ async def delete_team_endpoint(
         raise HTTPException(404, "Team not found")
 
 
-@router.post("/teams/{team_id}/upload-logo")
+@router.post(
+    "/teams/{team_id}/upload-logo",
+    response_model=TeamLogoResponse,
+    responses={"400": BAD_REQUEST},
+)
 async def upload_team_logo(
     team_id: int,
     file: UploadFile = File(...),
@@ -198,17 +266,29 @@ async def upload_team_logo(
     # os.path.join(UPLOAD_DIR, filename) let a client-supplied filename carrying
     # "../" segments write outside the uploads directory.
     try:
-        key = image_key("teams", team_id, file.content_type or "")
-        await put_image(key, await file.read(), file.content_type or "")
-    except InvalidImage as exc:
+        key = storage.image_key("teams", team_id, file.content_type or "")
+        await storage.put_image(key, await file.read(), file.content_type or "")
+    except storage.InvalidImage as exc:
         raise HTTPException(400, str(exc)) from exc
 
+    # A root-relative path is stored, not the bare key: browsers resolve it
+    # against the page, so a relative value breaks on nested routes like
+    # "/v1/teams/17". "/uploads/..." is routable from anywhere and is also where
+    # the CDN redirect lives.
+    team.logo = f"/uploads/{key}"
     await db.commit()
     await db.refresh(team)
-    return {"logo": key}
+    return TeamLogoResponse(team_id=team.id, logo=team.logo)
 
 
-@router.get("/teams/{team_id}/available-players", response_model=list[PlayerDropdownItem])
+@router.get(
+    "/teams/{team_id}/available-players",
+    response_model=list[PlayerDropdownItem],
+    responses=paginated_list_response(
+        "One page of this account's players who are not on a squad at this level.",
+        {"404": NOT_FOUND},
+    ),
+)
 async def get_available_players_endpoint(
     team_id: int,
     q: str | None = Query(None, description="Search by first or last name"),
@@ -216,31 +296,47 @@ async def get_available_players_endpoint(
     limit: int = Query(100, ge=1, le=500),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    response: Response = None,
 ):
-    players, error = await get_available_players_for_team(
+    players, error, total = await get_available_players_for_team(
         db, team_id, user_id=current_user.id, q=q, skip=skip, limit=limit
     )
     if error:
         raise HTTPException(404, error)
+    set_pagination_headers(response, total=total, skip=skip, limit=limit)
     return players
 
 
-@router.post("/teams/{team_id}/players", status_code=201)
+@router.post(
+    "/teams/{team_id}/players",
+    status_code=201,
+    response_model=TeamPlayerAddResponse,
+    responses={"400": BAD_REQUEST},
+)
 async def add_player_to_team_by_phone_endpoint(
     team_id: int,
     data: TeamPlayerByPhone,
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    """Add one player to a squad by typing the number registered to them.
+
+    A number may be shared, so an ambiguous match is refused with the candidates
+    and their codes rather than one being picked. Add by id in that case.
+    """
     assignment, error = await assign_player_to_team_by_phone(
         db, team_id, data.country_code, data.mobile_number, data.role, user_id=current_user.id
     )
     if error:
         raise HTTPException(400, error)
-    return {"message": "Player added to team successfully", "assignment": assignment}
+    return TeamPlayerAddResponse(message="Player added to team successfully", assignment=assignment)
 
 
-@router.post("/teams/{team_id}/players/bulk", response_model=PlayerBulkAssignResponse)
+@router.post(
+    "/teams/{team_id}/players/bulk",
+    response_model=PlayerBulkAssignResponse,
+    responses={"400": BAD_REQUEST},
+)
 async def add_players_to_team_bulk_endpoint(
     team_id: int,
     data: TeamBulkPlayerAdd,

@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -44,7 +44,14 @@ async def _heal_results(db: AsyncSession, matches: Match | list[Match]) -> None:
             await sync_match_result(db, match)
 
 
-async def get_matches(db: AsyncSession, user_id: int, skip: int = 0, limit: int = 100):
+async def get_matches(
+    db: AsyncSession, user_id: int, skip: int = 0, limit: int = 100
+) -> tuple[list[Match], int]:
+    """One page of this account's matches, and the total that page is drawn from."""
+    total = int(
+        (await db.execute(select(func.count(Match.id)).where(Match.user_id == user_id))).scalar()
+        or 0
+    )
     result = await db.execute(
         select(Match)
         .options(
@@ -57,7 +64,7 @@ async def get_matches(db: AsyncSession, user_id: int, skip: int = 0, limit: int 
     )
     matches = list(result.scalars().all())
     await _heal_results(db, matches)
-    return matches
+    return matches, total
 
 
 async def get_match(db: AsyncSession, match_id: int, user_id: int):

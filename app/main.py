@@ -7,6 +7,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api_docs import (
+    BAD_REQUEST,
+    OPENAPI_TAGS,
+    PAGINATION_HEADER_NAMES,
+    install_openapi,
+)
 from app.auth.models import User
 from app.auth.routes import router as auth_router
 from app.auth.security import get_current_user
@@ -23,6 +29,7 @@ from app.players.routes import router as players_router
 from app.schemas import (
     CountryCodeOut,
     CountryOut,
+    HealthResponse,
     OTPVerifyRequest,
     OTPVerifyResponse,
 )
@@ -31,7 +38,27 @@ from app.seed import seed_levels, seed_locations
 from app.storage import read_image
 from app.teams.routes import router as teams_router
 
-app = FastAPI(title="CricketApp", version="1.0.0")
+app = FastAPI(
+    title="CricketApp",
+    version="1.0.0",
+    description=(
+        "Cricket scoring and team management.\n\n"
+        "Every route is served under both `/v1` and `/api`; the two prefixes are "
+        "aliases of the same operations.\n\n"
+        "**Authentication.** Send `Authorization: Bearer <access_token>`. Access "
+        "tokens are short lived. When one expires, `POST /v1/auth/refresh` with the "
+        "refresh token returns a new pair without a password; the refresh token is "
+        "single use and is replaced by each refresh.\n\n"
+        '**Failures.** Every failure body is `{"detail": "..."}`, except '
+        "`POST /v1/players`, whose 409 carries a structured duplicate-player payload "
+        "(`detail.next_action` tells the client what to do next), and validation "
+        "errors, which use FastAPI's `detail` array.\n\n"
+        "**Pagination.** List endpoints return a bare array and describe the page "
+        "in the `X-Total-Count`, `X-Has-More`, `X-Skip` and `X-Limit` response "
+        "headers. A page is never silently truncated: check `X-Has-More`."
+    ),
+    openapi_tags=OPENAPI_TAGS,
+)
 
 API_V1_PREFIX = "/v1"
 # Alias prefix. The web client is built against "/api"; exposing both means its
@@ -121,8 +148,12 @@ app.add_middleware(
     # Browsers cap a preflight cache at 600 seconds, so 10 minutes is the most
     # that actually takes effect. Without this every request pays a preflight.
     max_age=600,
-    # Needed so the browser can read these from a cross-origin response.
-    expose_headers=["Content-Length", "Content-Type"],
+    # Needed so the browser can read these from a cross-origin response. The
+    # pagination names are here because a header the server sends but does not
+    # list is invisible to fetch() and XHR, which would leave browser clients
+    # unable to see whether a page was truncated - exactly the bug the headers
+    # were added to solve.
+    expose_headers=["Content-Length", "Content-Type", *PAGINATION_HEADER_NAMES],
 )
 
 routers = [
@@ -139,6 +170,10 @@ for router, deps in routers:
 
 UPLOADS_DIR = "uploads"
 os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+# Installed after the routers so the dependency graph it walks is complete. Until
+# this runs, the document declares no failures at all - see app/api_docs.py.
+install_openapi(app)
 
 
 def _cdn_base_url() -> str:
@@ -246,13 +281,19 @@ async def shutdown():
     await engine.dispose()
 
 
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse, tags=["health"])
 async def health():
+    """Liveness probe.
+
+    Deliberately unauthenticated and dependency-free: a probe that needs a token
+    cannot answer the question "is this process up", only "is someone's token
+    still valid".
+    """
     return {"status": "ok"}
 
 
-@app.get("/v1/locations", response_model=list[CountryOut])
-@app.get("/api/locations", response_model=list[CountryOut], include_in_schema=False)
+@app.get("/v1/locations", response_model=list[CountryOut], tags=["reference"])
+@app.get("/api/locations", response_model=list[CountryOut], tags=["reference"])
 async def list_locations(
     db: AsyncSession = Depends(get_db),
     _: User = Depends(get_current_user),
@@ -260,16 +301,26 @@ async def list_locations(
     return await get_all_countries(db)
 
 
-@app.get("/v1/country-codes", response_model=list[CountryCodeOut])
-@app.get("/api/country-codes", response_model=list[CountryCodeOut], include_in_schema=False)
+@app.get("/v1/country-codes", response_model=list[CountryCodeOut], tags=["reference"])
+@app.get("/api/country-codes", response_model=list[CountryCodeOut], tags=["reference"])
 async def list_country_codes(
     _: User = Depends(get_current_user),
 ):
     return await get_country_codes()
 
 
-@app.post("/v1/verify-otp", response_model=OTPVerifyResponse)
-@app.post("/api/verify-otp", response_model=OTPVerifyResponse, include_in_schema=False)
+@app.post(
+    "/v1/verify-otp",
+    response_model=OTPVerifyResponse,
+    tags=["players"],
+    responses={"400": BAD_REQUEST},
+)
+@app.post(
+    "/api/verify-otp",
+    response_model=OTPVerifyResponse,
+    tags=["players"],
+    responses={"400": BAD_REQUEST},
+)
 async def verify_otp(
     data: OTPVerifyRequest,
     db: AsyncSession = Depends(get_db),

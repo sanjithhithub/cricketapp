@@ -138,11 +138,6 @@ class ScorecardDTO:
     end_reason: str | None = None
     max_overs: int | None = None
     last_over_bowler_id: int | None = None
-    # True when a wicket fell with no batsman left to come in, so the innings
-    # is paused with a vacant crease slot rather than over. A batsman still has
-    # to be picked before scoring can resume. Kept under the historical name so
-    # the scorecard response shape is unchanged.
-    order_exhausted: bool = False
     # True for Super Over innings (max 6 legal deliveries per side).
     is_super_over: bool = False
     # True when the innings is waiting for a batsman to be picked: a wicket fell
@@ -306,7 +301,6 @@ class ScoreEngine:
                 end_reason=None,
                 max_overs=1 if innings.is_super_over else max_overs,
                 last_over_bowler_id=None,
-                order_exhausted=False,
                 is_super_over=innings.is_super_over,
                 awaiting_batsman=False,
                 striker_id=None,
@@ -477,7 +471,6 @@ class ScoreEngine:
             end_reason=state.end_reason,
             max_overs=1 if innings.is_super_over else max_overs,
             last_over_bowler_id=state.last_over_bowler,
-            order_exhausted=state.awaiting_batsman and not state.completed,
             is_super_over=innings.is_super_over,
             awaiting_batsman=state.awaiting_batsman and not state.completed,
             striker_id=state.striker,

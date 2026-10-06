@@ -834,6 +834,94 @@ def test_numbers_are_stored_as_text_with_leading_zeros_intact():
     assert phone_e164("", "9812345678") is None
 
 
+# --- email: a contact field, never a key ---------------------------------
+
+
+def test_two_players_may_share_an_email(client, refs, admin, as_user):
+    """A shared email is as real as a shared phone: a parent registers both
+    children with one address. The second registration is reported in the
+    duplicate check but never blocked - no 409, no confirmation required."""
+    as_user(admin[0])
+    shared_email = f"shared{_counter['n']}-email@test.com"
+
+    first = _create(client, _payload(refs, first="Aarav", last="Mehta", email=shared_email))
+    assert first.status_code == 201
+    second = _create(client, _payload(refs, first="Anaya", last="Mehta", email=shared_email))
+    assert second.status_code == 201
+    assert second.json()["id"] != first.json()["id"]
+
+    by_code = client.get(f"/v1/players/by-code/{second.json()['player_code']}")
+    assert by_code.status_code == 200
+
+
+def test_the_duplicate_check_reports_a_shared_email_but_does_not_block(
+    client, refs, admin, as_user
+):
+    as_user(admin[0])
+    email = f"check{_counter['n']}-email@test.com"
+    first = _create(client, _payload(refs, first="Riya", last="Nair", email=email))
+    assert first.status_code == 201
+
+    check = client.post(
+        "/v1/players/check-duplicate",
+        json={
+            "first_name": "Kiara",
+            "last_name": "Nair",
+            "country_code": "+91",
+            "mobile_number": _next_phone(),
+            "email": email,
+        },
+    ).json()
+    assert check["phone_taken"] is False
+    assert [m["player_code"] for m in check["email_matches"]] == [first.json()["player_code"]]
+    assert check["requires_confirmation"] is False
+
+
+def test_duplicate_email_does_not_500_on_create(client, refs, admin, as_user):
+    """Regression: the players.email unique constraint used to 500 on a second
+    registration with the same address."""
+    as_user(admin[0])
+    email = f"no500{_counter['n']}-email@test.com"
+    first = _create(client, _payload(refs, first="Kabir", last="Singh", email=email))
+    assert first.status_code == 201
+
+    second = _create(client, _payload(refs, first="Dev", last="Singh", email=email))
+    assert second.status_code == 201, second.text
+
+
+def test_setting_an_email_already_in_use_does_not_500(client, refs, admin, as_user):
+    """PATCH and PUT to an email that already belongs to another player must be
+    accepted: email is a contact field, not an identity."""
+    as_user(admin[0])
+    email = f"patch{_counter['n']}-email@test.com"
+    first = _create(client, _payload(refs, first="Neil", last="Kapoor", email=email))
+    second = _create(client, _payload(refs, first="Omar", last="Kapoor"))
+    assert first.status_code == 201 and second.status_code == 201
+
+    patched = client.patch(f"/v1/players/{second.json()['id']}", json={"email": email})
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["email"] == email
+
+    replaced = client.put(
+        f"/v1/players/{second.json()['id']}",
+        json=_payload(refs, first="Omar", last="Kapoor", email=email),
+    )
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()["email"] == email
+
+
+def test_a_shared_email_is_masked_in_duplicate_candidates(client, refs, admin, as_user):
+    """The candidate payload must never echo the email back verbatim if showing
+    it would leak someone else's address decision; today it omits email."""
+    as_user(admin[0])
+    check = client.post(
+        "/v1/players/check-duplicate",
+        json={"first_name": "Nobody", "last_name": "Here"},
+    ).json()
+    for match in check["phone_matches"] + check["name_matches"] + check["email_matches"]:
+        assert "email" not in match
+
+
 def test_the_model_fills_in_identity_for_any_insert(refs, admin):
     """Even a row written straight through the ORM gets a code and a phone key.
 

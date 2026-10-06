@@ -43,8 +43,14 @@ async def set_team_captains(
 ):
     """Name (or clear) a team's captain and vice-captain.
 
-    Returns ``(assignment_pairs, error)``. A non-``None`` error means nothing was
-    written, so a rejected request never leaves a half-applied captaincy behind.
+    Returns ``(captains, message)``. When ``captains`` is ``None`` nothing was
+    written and ``message`` is the reason; when it is a tuple, ``message`` is a
+    human-readable summary of what was applied. That asymmetry is the point: the
+    two used to be returned as ``(result, error)`` with the message second, which
+    reads exactly like an error on every call and turned every successful request
+    into a 400 at the route.
+
+    A rejected request never leaves a half-applied captaincy behind.
 
     The rules, and why each exists:
 
@@ -121,7 +127,14 @@ async def get_teams(
     skip: int = 0,
     limit: int = 100,
     level_id: int | None = None,
-):
+) -> tuple[list[dict], int]:
+    """One page of this account's teams, and the total that page is drawn from."""
+    where = [Team.user_id == user_id]
+    if level_id is not None:
+        where.append(Team.level_id == level_id)
+
+    total = int((await db.execute(select(func.count(Team.id)).where(*where))).scalar() or 0)
+
     stmt = (
         select(
             Team,
@@ -138,17 +151,15 @@ async def get_teams(
         .outerjoin(PlayerTeamAssignment, PlayerTeamAssignment.team_id == Team.id)
         .group_by(Team.id)
         .order_by(Team.id)
-        .where(Team.user_id == user_id)
+        .where(*where)
     )
-    if level_id is not None:
-        stmt = stmt.where(Team.level_id == level_id)
     stmt = stmt.offset(skip).limit(limit)
 
     result = await db.execute(stmt)
     rows = result.all()
 
     teams = []
-    for team, total, playing_11, substitutes, bench in rows:
+    for team, total_players, playing_11, substitutes, bench in rows:
         teams.append(
             {
                 "id": team.id,
@@ -156,13 +167,13 @@ async def get_teams(
                 "short_name": team.short_name,
                 "logo": team.logo,
                 "level": team.level.name if team.level else None,
-                "total_players": total,
+                "total_players": total_players,
                 "playing_11": playing_11,
                 "substitutes": substitutes,
                 "bench": bench,
             }
         )
-    return teams
+    return teams, total
 
 
 async def get_team_options(db: AsyncSession, user_id: int, level_id: int | None = None):

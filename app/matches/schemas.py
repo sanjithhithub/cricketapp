@@ -1,40 +1,41 @@
 from datetime import date
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
+
+from app.enums import MatchStatus, MatchType, TossDecision, coerce_enum
 
 
 class MatchBase(BaseModel):
     match_date: date
-    match_time: str
-    venue: str
-    match_type: str
-    result: str | None = None
+    # 24-hour local start time as "HH:MM". A string rather than a time because the
+    # venue's timezone is not recorded on the match, so a bare "14:30" is what
+    # actually gets displayed next to the date.
+    match_time: str = Field(..., pattern=r"^([01]\d|2[0-3]):[0-5]\d$", max_length=5)
+    venue: str = Field(..., min_length=1, max_length=200)
+    match_type: MatchType
+    result: str | None = Field(None, max_length=500)
     team_a_id: int
     team_b_id: int
     toss_winner_id: int
-    toss_decision: str
-    referee_1_name: str | None = None
-    referee_2_name: str | None = None
-    match_referee_name: str | None = None
+    toss_decision: TossDecision
+    referee_1_name: str | None = Field(None, max_length=100)
+    referee_2_name: str | None = Field(None, max_length=100)
+    match_referee_name: str | None = Field(None, max_length=100)
     # A level main match goes to a one-over-per-side Super Over instead of
     # a tied result. super_over_repeat keeps playing extra Super Overs (batting
     # order swapped each time) when the Super Over is itself level.
     super_over_enabled: bool = False
     super_over_repeat: bool = True
 
-    @field_validator("match_type")
+    @field_validator("match_type", mode="before")
     @classmethod
     def validate_match_type(cls, v):
-        if v not in ("T20", "ODI", "Test"):
-            raise ValueError("match_type must be T20, ODI, or Test")
-        return v
+        return coerce_enum(MatchType, v)
 
-    @field_validator("toss_decision")
+    @field_validator("toss_decision", mode="before")
     @classmethod
     def validate_toss_decision(cls, v):
-        if v not in ("bat", "bowl"):
-            raise ValueError("toss_decision must be bat or bowl")
-        return v
+        return coerce_enum(TossDecision, v)
 
 
 class MatchCreate(MatchBase):
@@ -43,33 +44,33 @@ class MatchCreate(MatchBase):
 
 class MatchUpdate(BaseModel):
     match_date: date | None = None
-    match_time: str | None = None
-    venue: str | None = None
-    match_type: str | None = None
-    result: str | None = None
+    match_time: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$", max_length=5)
+    venue: str | None = Field(None, min_length=1, max_length=200)
+    match_type: MatchType | None = None
+    result: str | None = Field(None, max_length=500)
     team_a_id: int | None = None
     team_b_id: int | None = None
     toss_winner_id: int | None = None
-    toss_decision: str | None = None
-    referee_1_name: str | None = None
-    referee_2_name: str | None = None
-    match_referee_name: str | None = None
+    toss_decision: TossDecision | None = None
+    referee_1_name: str | None = Field(None, max_length=100)
+    referee_2_name: str | None = Field(None, max_length=100)
+    match_referee_name: str | None = Field(None, max_length=100)
     super_over_enabled: bool | None = None
     super_over_repeat: bool | None = None
 
-    @field_validator("match_type")
+    @field_validator("match_type", mode="before")
     @classmethod
     def validate_match_type(cls, v):
-        if v is not None and v not in ("T20", "ODI", "Test"):
-            raise ValueError("match_type must be T20, ODI, or Test")
-        return v
+        if v is None:
+            return None
+        return coerce_enum(MatchType, v)
 
-    @field_validator("toss_decision")
+    @field_validator("toss_decision", mode="before")
     @classmethod
     def validate_toss_decision(cls, v):
-        if v is not None and v not in ("bat", "bowl"):
-            raise ValueError("toss_decision must be bat or bowl")
-        return v
+        if v is None:
+            return None
+        return coerce_enum(TossDecision, v)
 
 
 class MatchTeamInfo(BaseModel):
@@ -83,7 +84,7 @@ class MatchTeamInfo(BaseModel):
 
 class MatchResponse(MatchBase):
     id: int
-    status: str = "scheduled"
+    status: MatchStatus = MatchStatus.SCHEDULED
     current_innings_number: int = 0
     team_a: MatchTeamInfo
     team_b: MatchTeamInfo

@@ -1,4 +1,4 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.scoring.enums import ExtraType, MatchFormat, WicketType
 
@@ -11,27 +11,20 @@ class DeliveryCreate(BaseModel):
     striker_id: int
     non_striker_id: int
     bowler_id: int
-    extra_type: str = "none"
-    runs_batsman: int = 0
-    runs_extras: int = 0
-    wicket_type: str | None = None
+    extra_type: ExtraType = ExtraType.NONE
+    runs_batsman: int = Field(0, ge=0)
+    runs_extras: int = Field(0, ge=0)
+    wicket_type: WicketType | None = None
     dismissed_player_id: int | None = None
 
-    @field_validator("extra_type")
-    @classmethod
-    def validate_extra_type(cls, v):
-        if v not in {t.value for t in ExtraType}:
-            raise ValueError("extra_type must be one of none, wide, no_ball, bye, leg_bye")
-        return v
-
-    @field_validator("wicket_type")
+    @field_validator("wicket_type", mode="before")
     @classmethod
     def validate_wicket_type(cls, v):
-        if v is not None and v not in {t.value for t in WicketType}:
-            raise ValueError(
-                "wicket_type must be one of bowled, caught, lbw, run_out, stumped, hit_wicket"
-            )
-        return v
+        if v is None or v == "":
+            return None
+        # An empty string is how a client says "no wicket"; anything else must be
+        # a real dismissal, and coercion turns it into the documented member.
+        return WicketType(v) if not isinstance(v, WicketType) else v
 
     @field_validator("wicket_type")
     @classmethod
@@ -40,23 +33,19 @@ class DeliveryCreate(BaseModel):
         # only wicket it can carry is a run out.
         if (
             v is not None
-            and info.data.get("extra_type") in ("wide", "no_ball")
-            and v != WicketType.RUN_OUT.value
+            and info.data.get("extra_type") in (ExtraType.WIDE, ExtraType.NO_BALL)
+            and v != WicketType.RUN_OUT
         ):
             raise ValueError("only a run out can be recorded on a wide or no-ball")
-        return v
-
-    @field_validator("runs_batsman", "runs_extras")
-    @classmethod
-    def validate_non_negative(cls, v):
-        if v is None or v < 0:
-            raise ValueError("runs cannot be negative")
         return v
 
     @field_validator("runs_extras")
     @classmethod
     def validate_extras_require_type(cls, v, info):
-        if v != 0 and info.data.get("extra_type") == "none":
+        # `extra_type` is an enum member by now, and a str enum compares equal to
+        # its value, so these comparisons read exactly as they did when the field
+        # was a plain string.
+        if v != 0 and info.data.get("extra_type") == ExtraType.NONE:
             raise ValueError("extra runs require an extra type")
         return v
 
@@ -65,7 +54,7 @@ class DeliveryCreate(BaseModel):
     def validate_penalty_extra_minimum(cls, v, info):
         # A wide and a no-ball are penalty deliveries worth at least one extra
         # run before any runs scored off the bat.
-        if info.data.get("extra_type") in ("wide", "no_ball") and v < 1:
+        if info.data.get("extra_type") in (ExtraType.WIDE, ExtraType.NO_BALL) and v < 1:
             raise ValueError("a wide or no-ball is worth at least 1 extra run")
         return v
 
@@ -73,9 +62,9 @@ class DeliveryCreate(BaseModel):
     @classmethod
     def validate_run_attribution(cls, v, info):
         extra_type = info.data.get("extra_type")
-        if extra_type == "wide" and v != 0:
+        if extra_type == ExtraType.WIDE and v != 0:
             raise ValueError("runs on a wide must be recorded as extras")
-        if extra_type in ("bye", "leg_bye") and v != 0:
+        if extra_type in (ExtraType.BYE, ExtraType.LEG_BYE) and v != 0:
             raise ValueError("bye/leg-bye runs must be recorded as extras")
         return v
 
@@ -192,11 +181,17 @@ class ScorecardResponse(BaseModel):
     end_reason: str | None
     max_overs: int | None = None
     last_over_bowler_id: int | None = None
-    order_exhausted: bool = False
     is_super_over: bool = False
     # True when a wicket fell and the innings is waiting for a new batsman to
     # be picked. At least one of striker_id / non_striker_id is None whenever
     # this is set.
+    #
+    # This is the only flag for "the innings needs a batsman". It used to have a
+    # twin, `order_exhausted`, set from the very same expression - so the two
+    # were always equal, and the name promised something the value never said:
+    # it fired on the seventh wicket, long before the batting order could
+    # actually be exhausted. A consumer that took it at face value would stop
+    # offering new batsmen while eleven were still at the crease.
     awaiting_batsman: bool = False
     match_result: str | None = None
     striker_id: int | None

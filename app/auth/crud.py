@@ -8,12 +8,15 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.models import AuthOTP, User
+from app.auth.models import AuthOTP, RefreshToken, User
 from app.auth.schemas import UserRegister
 from app.auth.security import (
     ALGORITHM,
     SECRET_KEY,
+    generate_refresh_token,
     hash_password,
+    hash_refresh_token,
+    refresh_token_expiry,
     verify_password,
 )
 from app.email_service import generate_otp, send_email_otp
@@ -33,6 +36,110 @@ async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
 async def get_user_by_id(db: AsyncSession, user_id: int) -> User | None:
     result = await db.execute(select(User).where(User.id == user_id))
     return result.scalar_one_or_none()
+
+
+# --- Refresh tokens ---------------------------------------------------------
+#
+# Three operations, and the shape of them is the whole design:
+#
+#   issue  - mint a token and store its hash. Called on login, register and
+#            Google sign-in. Never revokes anything, so signing in on a second
+#            device does not sign you out of the first.
+#   rotate - exchange a live token for a new one, revoking the old. Each refresh
+#            token is therefore single use.
+#   revoke - end a session without touching the user's other sessions.
+#
+# Rotation is what makes a stolen refresh token detectable rather than merely
+# inconvenient: a thief who redeems a token the legitimate client has already
+# rotated produces a revoked token in the chain, and the legitimate client's
+# next refresh names the contradiction.
+
+
+async def issue_refresh_token(db: AsyncSession, user_id: int) -> tuple[str, RefreshToken]:
+    """Mint a refresh token for a user and persist its hash.
+
+    Returns the raw token, which the caller must hand to the client immediately:
+    it is not recoverable afterwards, only its hash is on disk.
+    """
+    token = generate_refresh_token()
+    record = RefreshToken(
+        user_id=user_id,
+        token_hash=hash_refresh_token(token),
+        expires_at=refresh_token_expiry(),
+    )
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return token, record
+
+
+async def rotate_refresh_token(db: AsyncSession, token: str) -> tuple[User, str]:
+    """Redeem a refresh token for a new pair of tokens.
+
+    Raises 401 when the token is unknown, expired, revoked, or belongs to a user
+    who is no longer active. All four are reported identically on purpose: a
+    caller that could tell "this token was revoked" from "this token never existed"
+    could enumerate which tokens are real.
+
+    The new token is linked back to the one it replaces via ``replaced_by_id``.
+    """
+    token_hash = hash_refresh_token(token)
+    result = await db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+    record = result.scalar_one_or_none()
+
+    now = datetime.utcnow()
+    if record is None or record.revoked_at is not None or record.expires_at <= now:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        )
+
+    user = await get_user_by_id(db, record.user_id)
+    if user is None or not user.is_active:
+        # Revoke on the way out: a token for a deactivated account should not
+        # become usable again if the account is reactivated later.
+        record.revoked_at = now
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
+        )
+
+    new_token, new_record = await issue_refresh_token(db, user.id)
+
+    # Revoked *after* the new one exists, so a crash between the two leaves the
+    # old token usable rather than the user holding two tokens and neither
+    # working.
+    record.revoked_at = now
+    await db.commit()
+    await db.refresh(record)
+    record.replaced_by_id = new_record.id
+    await db.commit()
+
+    return user, new_token
+
+
+async def revoke_refresh_token(db: AsyncSession, token: str) -> bool:
+    """End the session a refresh token represents.
+
+    Returns whether anything was revoked. Silent on failure: logout is called on a
+    best-effort basis by clients that may already have lost the token, and a 401
+    to "please log me out" only leaves the caller unsure whether it worked.
+
+    The return value is what lets the response say which happened without the
+    route having to distinguish them, and it is why this is not an error path.
+    """
+    token_hash = hash_refresh_token(token)
+    result = await db.execute(
+        select(RefreshToken).where(
+            RefreshToken.token_hash == token_hash,
+            RefreshToken.revoked_at.is_(None),
+        )
+    )
+    record = result.scalar_one_or_none()
+    if record is None:
+        return False
+    record.revoked_at = datetime.utcnow()
+    await db.commit()
+    return True
 
 
 async def _get_latest_otp(
