@@ -21,6 +21,9 @@ class MatchBase(BaseModel):
     referee_1_name: str | None = Field(None, max_length=100)
     referee_2_name: str | None = Field(None, max_length=100)
     match_referee_name: str | None = Field(None, max_length=100)
+    # Player of the match on the completed-match summary. Never derived, may be
+    # set to a player from either side, and optional until a match is done.
+    player_of_match_id: int | None = None
     # A level main match goes to a one-over-per-side Super Over instead of
     # a tied result. super_over_repeat keeps playing extra Super Overs (batting
     # order swapped each time) when the Super Over is itself level.
@@ -57,6 +60,7 @@ class MatchUpdate(BaseModel):
     match_referee_name: str | None = Field(None, max_length=100)
     super_over_enabled: bool | None = None
     super_over_repeat: bool | None = None
+    player_of_match_id: int | None = None
 
     @field_validator("match_type", mode="before")
     @classmethod
@@ -89,6 +93,7 @@ class MatchResponse(MatchBase):
     team_a: MatchTeamInfo
     team_b: MatchTeamInfo
     toss_winner: MatchTeamInfo
+    player_of_match_id: int | None = None
 
     class Config:
         from_attributes = True

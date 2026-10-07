@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
 if TYPE_CHECKING:
+    from app.players.models import Player
     from app.teams.models import Team
 
 
@@ -30,6 +31,12 @@ class Match(Base):
     referee_1_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     referee_2_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     match_referee_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # The human-judged award shown on the completed-match summary. Deliberately
+    # optional and never derived: it may belong to the losing side.
+    player_of_match_id: Mapped[int | None] = mapped_column(
+        ForeignKey("players.id"), nullable=True
+    )
+    player_of_match: Mapped[Player] = relationship(foreign_keys=[player_of_match_id])
 
     status: Mapped[str] = mapped_column(String(20), default="scheduled")
     current_innings_number: Mapped[int] = mapped_column(Integer, default=0)

@@ -6,7 +6,7 @@ from app.matches.models import Match
 from app.matches.schemas import MatchCreate, MatchUpdate
 from app.scoring.crud import sync_match_result
 from app.scoring.enums import MatchStatus
-from app.teams.models import Team
+from app.teams.models import PlayerTeamAssignment, Team
 
 
 async def _validate_teams(
@@ -30,6 +30,28 @@ async def _validate_teams(
     if toss_winner_id not in (team_a_id, team_b_id):
         errors.append("Toss winner must be Team A or Team B")
     return errors
+
+
+async def _validate_player_of_match(
+    db: AsyncSession, team_a_id: int, team_b_id: int, player_id: int | None
+) -> str | None:
+    """The player-of-the-match award must go to someone in one of the two sides.
+
+    It may be a player from the losing team - that is exactly the case the award
+    exists for - so only a player outside both squads is rejected. ``None`` (no
+    award yet) is always fine.
+    """
+    if player_id is None:
+        return None
+    result = await db.execute(
+        select(PlayerTeamAssignment.player_id).where(
+            PlayerTeamAssignment.team_id.in_([team_a_id, team_b_id]),
+            PlayerTeamAssignment.player_id == player_id,
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        return "Player of the match must be a player in Team A or Team B"
+    return None
 
 
 async def _heal_results(db: AsyncSession, matches: Match | list[Match]) -> None:
@@ -83,6 +105,13 @@ async def get_match(db: AsyncSession, match_id: int, user_id: int):
 
 async def create_match(db: AsyncSession, data: MatchCreate, user_id: int):
     errors = await _validate_teams(db, data.team_a_id, data.team_b_id, data.toss_winner_id, user_id)
+    errors += [
+        e
+        for e in [
+            await _validate_player_of_match(db, data.team_a_id, data.team_b_id, data.player_of_match_id)
+        ]
+        if e
+    ]
     if errors:
         return None, "; ".join(errors)
 
@@ -110,6 +139,15 @@ async def update_match(db: AsyncSession, match_id: int, data: MatchUpdate, user_
         if errors:
             return None, "; ".join(errors)
 
+    if "player_of_match_id" in update_data:
+        new_team_a = update_data.get("team_a_id", match.team_a_id)
+        new_team_b = update_data.get("team_b_id", match.team_b_id)
+        error = await _validate_player_of_match(
+            db, new_team_a, new_team_b, update_data["player_of_match_id"]
+        )
+        if error:
+            return None, error
+
     for key, val in update_data.items():
         setattr(match, key, val)
 
@@ -124,6 +162,13 @@ async def replace_match(db: AsyncSession, match_id: int, data: MatchCreate, user
         return None, "Match not found"
 
     errors = await _validate_teams(db, data.team_a_id, data.team_b_id, data.toss_winner_id, user_id)
+    errors += [
+        e
+        for e in [
+            await _validate_player_of_match(db, data.team_a_id, data.team_b_id, data.player_of_match_id)
+        ]
+        if e
+    ]
     if errors:
         return None, "; ".join(errors)
 

@@ -27,9 +27,11 @@ from app.scoring.enums import MatchStatus
 from app.scoring.schemas import (
     AddBatsmanRequest,
     DeliveryCreate,
+    MatchSummaryResponse,
     ScorecardResponse,
     StartInningsRequest,
 )
+from app.scoring.summary import get_match_summary
 
 router = APIRouter(tags=["scoring"])
 
@@ -205,3 +207,32 @@ async def get_match_scorecard(
         await db.refresh(match)
         response.match_result = match.result
     return response
+
+
+@router.get(
+    "/matches/{match_id}/summary",
+    response_model=MatchSummaryResponse,
+    responses={"404": NOT_FOUND},
+)
+async def get_match_summary_endpoint(
+    match_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The finished-match experience: result, winner, each innings' score and
+    overs, toss, venue, player of the match, top run scorer, best bowler and
+    one-line highlights.
+
+    Works for any match this account can see. Before the second innings is
+    scored the winner and margin are absent (there is nothing to derive them
+    from yet); for a completed match the stored result is healed first exactly
+    like the scorecard endpoint does.
+    """
+    match = await get_match(db, match_id, current_user.id)
+    if not match:
+        raise HTTPException(404, "Scoring match not found")
+    if match.status == MatchStatus.COMPLETED.value:
+        await sync_match_result(db, match)
+        await db.refresh(match)
+    payload = await get_match_summary(db, match)
+    return MatchSummaryResponse.model_validate(payload)

@@ -1,3 +1,5 @@
+from datetime import date
+
 from pydantic import BaseModel, Field, field_validator
 
 from app.scoring.enums import ExtraType, MatchFormat, WicketType
@@ -201,3 +203,86 @@ class ScorecardResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# --- completed-match summary ------------------------------------------------
+
+
+class SummaryTeam(BaseModel):
+    id: int
+    name: str
+    short_name: str
+
+
+class TossSummary(BaseModel):
+    winner: SummaryTeam
+    decision: str
+
+
+class InningsSummary(BaseModel):
+    innings_number: int
+    team: SummaryTeam
+    total: int
+    wickets: int
+    overs_bowled: float
+    overs_bowled_str: str
+    run_rate: float
+    extras: int
+    target: int | None
+    is_super_over: bool
+    completed: bool
+
+
+class PlayerSummary(BaseModel):
+    player_id: int
+    first_name: str | None = None
+    last_name: str | None = None
+    player_code: str | None = None
+    team_id: int | None = None
+    team_name: str | None = None
+
+
+class TopRunScorerSummary(PlayerSummary):
+    # Aggregated across every innings of the match, from either side.
+    runs: int
+    balls_faced: int
+    fours: int
+    sixes: int
+    strike_rate: float
+
+
+class BestBowlerSummary(PlayerSummary):
+    # Aggregated across every innings of the match, from either side.
+    balls_bowled: int
+    overs: float
+    overs_str: str
+    maidens: int
+    runs_conceded: int
+    wickets: int
+    economy: float
+
+
+class HighlightSummary(BaseModel):
+    type: str
+    text: str
+    player_id: int | None = None
+    team_id: int | None = None
+
+
+class MatchSummaryResponse(BaseModel):
+    match_id: int
+    status: str
+    result_text: str | None = None
+    winner: SummaryTeam | None = None
+    margin: str | None = None
+    toss: TossSummary | None = None
+    venue: str
+    match_date: date
+    match_time: str
+    match_type: str
+    teams: list[SummaryTeam]
+    innings: list[InningsSummary]
+    player_of_match: PlayerSummary | None = None
+    top_run_scorer: TopRunScorerSummary | None = None
+    best_bowler: BestBowlerSummary | None = None
+    highlights: list[HighlightSummary]
