@@ -59,9 +59,7 @@ def _run_batch(total: int) -> list[int]:
     return runs
 
 
-def _gen_deliveries(
-    order_ids: list[int], bowler_id: int, total: int, wickets: int
-) -> list[dict]:
+def _gen_deliveries(order_ids: list[int], bowler_id: int, total: int, wickets: int) -> list[dict]:
     """A legal ball-by-ball sequence reaching `total` runs with `wickets` wickets.
 
     Mirrors the generator used in the engine/result tests: every scoring ball is

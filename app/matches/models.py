@@ -33,9 +33,7 @@ class Match(Base):
     match_referee_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # The human-judged award shown on the completed-match summary. Deliberately
     # optional and never derived: it may belong to the losing side.
-    player_of_match_id: Mapped[int | None] = mapped_column(
-        ForeignKey("players.id"), nullable=True
-    )
+    player_of_match_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
     player_of_match: Mapped[Player] = relationship(foreign_keys=[player_of_match_id])
 
     status: Mapped[str] = mapped_column(String(20), default="scheduled")

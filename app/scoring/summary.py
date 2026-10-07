@@ -23,22 +23,20 @@ from app.teams.models import PlayerTeamAssignment, Team
 
 async def _load_teams(db: AsyncSession, match: Match) -> dict[int, dict]:
     ids = {match.team_a_id, match.team_b_id, match.toss_winner_id}
-    result = await db.execute(
-        select(Team.id, Team.name, Team.short_name).where(Team.id.in_(ids))
-    )
+    result = await db.execute(select(Team.id, Team.name, Team.short_name).where(Team.id.in_(ids)))
     return {row[0]: {"id": row[0], "name": row[1], "short_name": row[2]} for row in result.all()}
 
 
 async def _list_innings(db: AsyncSession, match_id: int) -> list[Innings]:
     result = await db.execute(
-        select(Innings).where(Innings.match_id == match_id).order_by(Innings.innings_number, Innings.id)
+        select(Innings)
+        .where(Innings.match_id == match_id)
+        .order_by(Innings.innings_number, Innings.id)
     )
     return list(result.scalars().all())
 
 
-async def _scorecards(
-    db: AsyncSession, innings_list: list[Innings]
-) -> dict[int, object]:
+async def _scorecards(db: AsyncSession, innings_list: list[Innings]) -> dict[int, object]:
     """Each innings' scorecard, keyed by innings id.
 
     A scorecard error or an innings with no batting order yields ``None`` so one
@@ -228,8 +226,7 @@ def _build_highlights(
             {
                 "type": "top_score",
                 "text": (
-                    f"{name} top-scored with {top_scorer['runs']} off "
-                    f"{top_scorer['balls_faced']}"
+                    f"{name} top-scored with {top_scorer['runs']} off {top_scorer['balls_faced']}"
                 ),
                 "player_id": top_scorer["player_id"],
                 "team_id": top_scorer["team_id"],
@@ -296,9 +293,11 @@ async def get_match_summary(db: AsyncSession, match: Match) -> dict:
             bat_totals.values(),
             key=lambda a: (a["runs"], -a["balls_faced"]),
         )
-        top_scorer["strike_rate"] = round(
-            top_scorer["runs"] * 100 / top_scorer["balls_faced"], 2
-        ) if top_scorer["balls_faced"] else 0.0
+        top_scorer["strike_rate"] = (
+            round(top_scorer["runs"] * 100 / top_scorer["balls_faced"], 2)
+            if top_scorer["balls_faced"]
+            else 0.0
+        )
 
     best_bowler = None
     if bowl_totals:
@@ -309,9 +308,11 @@ async def get_match_summary(db: AsyncSession, match: Match) -> dict:
         full, rem = divmod(best_bowler["balls_bowled"], 6)
         best_bowler["overs"] = round(full + rem / 6, 2)
         best_bowler["overs_str"] = f"{full}.{rem}"
-        best_bowler["economy"] = round(
-            best_bowler["runs_conceded"] / (best_bowler["balls_bowled"] / 6), 2
-        ) if best_bowler["balls_bowled"] else 0.0
+        best_bowler["economy"] = (
+            round(best_bowler["runs_conceded"] / (best_bowler["balls_bowled"] / 6), 2)
+            if best_bowler["balls_bowled"]
+            else 0.0
+        )
 
     highlights = _build_highlights(innings_list, cards, top_scorer, best_bowler)
 

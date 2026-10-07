@@ -108,7 +108,9 @@ async def create_match(db: AsyncSession, data: MatchCreate, user_id: int):
     errors += [
         e
         for e in [
-            await _validate_player_of_match(db, data.team_a_id, data.team_b_id, data.player_of_match_id)
+            await _validate_player_of_match(
+                db, data.team_a_id, data.team_b_id, data.player_of_match_id
+            )
         ]
         if e
     ]
@@ -165,7 +167,9 @@ async def replace_match(db: AsyncSession, match_id: int, data: MatchCreate, user
     errors += [
         e
         for e in [
-            await _validate_player_of_match(db, data.team_a_id, data.team_b_id, data.player_of_match_id)
+            await _validate_player_of_match(
+                db, data.team_a_id, data.team_b_id, data.player_of_match_id
+            )
         ]
         if e
     ]
