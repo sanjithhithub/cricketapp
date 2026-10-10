@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +20,7 @@ from app.players.models import Player, PlayerAlias
 from app.players.schemas import PlayerCreate, PlayerUpdate, TeamAssignment
 from app.sms import send_otp
 from app.teams.models import PlayerTeamAssignment, Team
+from app.timeutils import utcnow
 
 MAX_SQUAD_SIZE = 15
 # A side fields 11 on the field for every format this app scores (T20, ODI and
@@ -202,7 +203,7 @@ async def _create_otp_record(db: AsyncSession, country_code: str, mobile_number:
 
     number = str(mobile_number)
     if os.getenv("OTP_SMS_ENABLED", "true").lower() == "false":
-        expires_at = datetime.utcnow() + timedelta(minutes=5)
+        expires_at = utcnow() + timedelta(minutes=5)
         otp = OTP(
             country_code=country_code,
             mobile_number=number,
@@ -215,7 +216,7 @@ async def _create_otp_record(db: AsyncSession, country_code: str, mobile_number:
         return otp, False
 
     otp_sent, session_info = await send_otp(country_code, number)
-    expires_at = datetime.utcnow() + timedelta(minutes=5)
+    expires_at = utcnow() + timedelta(minutes=5)
     otp = OTP(
         country_code=country_code,
         mobile_number=number,

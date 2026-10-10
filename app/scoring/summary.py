@@ -52,7 +52,7 @@ async def _scorecards(db: AsyncSession, innings_list: list[Innings]) -> dict[int
     return cards
 
 
-def _derive_result(
+def derive_result(
     innings_list: list[Innings],
     cards: dict[int, object],
 ) -> tuple[int | None, str | None]:
@@ -160,12 +160,16 @@ def _aggregate_bowlers(innings_list: list[Innings], cards: dict[int, object]) ->
                     "runs_conceded": 0,
                     "wickets": 0,
                     "maidens": 0,
+                    "wides": 0,
+                    "no_balls": 0,
                 },
             )
             acc["balls_bowled"] += b.balls_bowled
             acc["runs_conceded"] += b.runs_conceded
             acc["wickets"] += b.wickets
             acc["maidens"] += b.maidens
+            acc["wides"] += b.wides
+            acc["no_balls"] += b.no_balls
     return totals
 
 
@@ -258,7 +262,7 @@ async def get_match_summary(db: AsyncSession, match: Match) -> dict:
     innings_list = await _list_innings(db, match.id)
     cards = await _scorecards(db, innings_list)
 
-    winner_id, margin = _derive_result(innings_list, cards)
+    winner_id, margin = derive_result(innings_list, cards)
 
     innings_output = []
     for innings in innings_list:

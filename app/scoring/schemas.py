@@ -1,6 +1,6 @@
 from datetime import date
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.scoring.enums import ExtraType, MatchFormat, WicketType
 
@@ -144,8 +144,22 @@ class BatsmanCardOut(BaseModel):
     dismissal: str | None
     did_not_bat: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FallOfWicketOut(BaseModel):
+    # One row per wicket, in the order they fell: "23/1 (4.3 ov)".
+    wicket_number: int
+    score: int
+    player_id: int
+    first_name: str | None = None
+    last_name: str | None = None
+    player_code: str | None = None
+    over_number: int
+    ball_number: int
+    overs_str: str
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class BowlerCardOut(BaseModel):
@@ -160,9 +174,12 @@ class BowlerCardOut(BaseModel):
     runs_conceded: int
     wickets: int
     economy: float
+    # Wides and no-balls the bowler conceded: runs charged to the bowler that
+    # are not counted as legal balls of the over.
+    wides: int = 0
+    no_balls: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ScorecardResponse(BaseModel):
@@ -200,9 +217,9 @@ class ScorecardResponse(BaseModel):
     non_striker_id: int | None
     batsmen: list[BatsmanCardOut]
     bowlers: list[BowlerCardOut]
+    fall_of_wickets: list[FallOfWicketOut] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # --- completed-match summary ------------------------------------------------
@@ -260,6 +277,8 @@ class BestBowlerSummary(PlayerSummary):
     runs_conceded: int
     wickets: int
     economy: float
+    wides: int = 0
+    no_balls: int = 0
 
 
 class HighlightSummary(BaseModel):
@@ -286,3 +305,113 @@ class MatchSummaryResponse(BaseModel):
     top_run_scorer: TopRunScorerSummary | None = None
     best_bowler: BestBowlerSummary | None = None
     highlights: list[HighlightSummary]
+
+
+# --- ball-by-ball analytics -------------------------------------------------
+
+
+class DeliveryEventOut(BaseModel):
+    """One delivery in chronological order, with its running match state."""
+
+    over_number: int
+    ball_number: int
+    ball_label: str
+    striker_id: int
+    striker_name: str | None = None
+    non_striker_id: int
+    non_striker_name: str | None = None
+    bowler_id: int
+    bowler_name: str | None = None
+    runs_batsman: int
+    runs_extras: int
+    total_runs: int
+    extra_type: str
+    is_legal_ball: bool
+    is_boundary: bool = False
+    is_four: bool = False
+    is_six: bool = False
+    is_dot_ball: bool = False
+    wicket_type: str | None = None
+    dismissed_player_id: int | None = None
+    dismissed_player_name: str | None = None
+    team_total: int
+    team_wickets: int
+    legal_balls: int
+    run_rate: float
+    display: str
+
+
+class ExtrasBreakdownOut(BaseModel):
+    wides: int = 0
+    no_balls: int = 0
+    byes: int = 0
+    leg_byes: int = 0
+    total: int = 0
+
+
+class ScoringPatternOut(BaseModel):
+    """How the runs were made: dot balls and the run-scoring shot pattern."""
+
+    deliveries: int
+    legal_balls: int
+    dot_balls: int
+    singles: int
+    doubles: int
+    triples: int
+    fours: int
+    sixes: int
+    boundaries: int
+    boundary_runs: int
+    runs_off_bat: int
+    extras: int
+
+
+class OverSummaryOut(BaseModel):
+    over_number: int
+    bowler_id: int | None = None
+    bowler_name: str | None = None
+    legal_balls: int
+    runs: int
+    wickets: int
+    extras: int
+    fours: int
+    sixes: int
+    dot_balls: int
+    run_rate: float
+    cumulative_runs: int
+    cumulative_wickets: int
+    cumulative_run_rate: float
+
+
+class RunRatePointOut(BaseModel):
+    over_number: int
+    legal_balls: int
+    cumulative_runs: int
+    cumulative_wickets: int
+    run_rate: float
+    required_run_rate: float | None = None
+
+
+class InningsAnalyticsOut(BaseModel):
+    innings_id: int
+    innings_number: int
+    batting_team_id: int
+    bowling_team_id: int
+    is_super_over: bool
+    total: int
+    wickets: int
+    legal_balls: int
+    overs_bowled: float
+    overs_bowled_str: str
+    run_rate: float
+    target: int | None
+    extras: ExtrasBreakdownOut
+    scoring_pattern: ScoringPatternOut
+    deliveries: list[DeliveryEventOut]
+    over_by_over: list[OverSummaryOut]
+    run_rate_progression: list[RunRatePointOut]
+
+
+class MatchAnalyticsResponse(BaseModel):
+    match_id: int
+    innings: list[InningsAnalyticsOut]

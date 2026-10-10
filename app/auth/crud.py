@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import jwt
 from dotenv import load_dotenv
@@ -20,6 +20,7 @@ from app.auth.security import (
     verify_password,
 )
 from app.email_service import generate_otp, send_email_otp
+from app.timeutils import utcnow
 
 load_dotenv()
 logger = logging.getLogger("app.auth")
@@ -87,7 +88,7 @@ async def rotate_refresh_token(db: AsyncSession, token: str) -> tuple[User, str]
     result = await db.execute(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
     record = result.scalar_one_or_none()
 
-    now = datetime.utcnow()
+    now = utcnow()
     if record is None or record.revoked_at is not None or record.expires_at <= now:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token"
@@ -137,7 +138,7 @@ async def revoke_refresh_token(db: AsyncSession, token: str) -> bool:
     record = result.scalar_one_or_none()
     if record is None:
         return False
-    record.revoked_at = datetime.utcnow()
+    record.revoked_at = utcnow()
     await db.commit()
     return True
 
@@ -151,7 +152,7 @@ async def _get_latest_otp(
 ) -> AuthOTP | None:
     query = select(AuthOTP).where(
         AuthOTP.purpose == purpose,
-        AuthOTP.expires_at > datetime.utcnow(),
+        AuthOTP.expires_at > utcnow(),
         AuthOTP.is_verified.is_(False),
     )
     if email is not None:
@@ -170,7 +171,7 @@ async def _get_latest_otp_by_id(db: AsyncSession, otp_id: int) -> AuthOTP | None
     result = await db.execute(
         select(AuthOTP).where(
             AuthOTP.id == otp_id,
-            AuthOTP.expires_at > datetime.utcnow(),
+            AuthOTP.expires_at > utcnow(),
         )
     )
     return result.scalar_one_or_none()
@@ -186,7 +187,7 @@ async def _get_latest_verified_otp(
         .where(
             AuthOTP.purpose == purpose,
             AuthOTP.email == email.lower(),
-            AuthOTP.expires_at > datetime.utcnow(),
+            AuthOTP.expires_at > utcnow(),
             AuthOTP.is_verified.is_(True),
         )
         .order_by(AuthOTP.created_at.desc())
@@ -217,7 +218,7 @@ async def send_register_otp(db: AsyncSession, email: str):
         purpose="register",
         email=email,
         otp_hash=hash_password(code),
-        expires_at=datetime.utcnow() + timedelta(minutes=OTP_EXPIRE_MINUTES),
+        expires_at=utcnow() + timedelta(minutes=OTP_EXPIRE_MINUTES),
     )
     db.add(otp)
     await db.commit()
@@ -258,7 +259,7 @@ async def send_forgot_password_otp(db: AsyncSession, email: str):
         purpose="forgot_password",
         email=email,
         otp_hash=hash_password(code),
-        expires_at=datetime.utcnow() + timedelta(minutes=OTP_EXPIRE_MINUTES),
+        expires_at=utcnow() + timedelta(minutes=OTP_EXPIRE_MINUTES),
     )
     db.add(otp)
     await db.commit()
@@ -273,7 +274,7 @@ async def verify_forgot_password_otp(db: AsyncSession, email: str, otp_code: str
     if not verify_password(otp_code, otp.otp_hash):
         return None
 
-    now = datetime.utcnow()
+    now = utcnow()
     reset_token = jwt.encode(
         {
             "sub": f"reset:{otp.id}",

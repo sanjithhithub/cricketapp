@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.enums import (
     BATTING_POSITION_ALIASES,
@@ -231,8 +231,7 @@ class PlayerUpdate(BaseModel):
 class PlayerAliasOut(BaseModel):
     alias: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PlayerResponse(PlayerBase):
@@ -246,8 +245,7 @@ class PlayerResponse(PlayerBase):
     # an admin or to the user who owns the record (see the routes).
     phone_display: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PlayerTeamInfo(BaseModel):
@@ -257,8 +255,7 @@ class PlayerTeamInfo(BaseModel):
     level_name: str
     role: SquadRole
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PlayerTeamAssignmentResponse(BaseModel):
@@ -353,8 +350,7 @@ class PlayerDropdownItem(BaseModel):
     profile_image: str | None = None
     team_name: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TeamPlayerByPhone(BaseModel):
@@ -519,3 +515,99 @@ class PlayerAliasListResponse(BaseModel):
     player_id: int
     player_code: str
     aliases: list[str] = []
+
+
+# --- Player performance analytics -------------------------------------------
+
+
+class PlayerBattingStats(BaseModel):
+    innings: int
+    not_outs: int
+    dismissals: int
+    runs: int
+    balls_faced: int
+    # None when the player has never been dismissed: an average of runs/0 is
+    # undefined, not zero.
+    average: float | None = None
+    strike_rate: float
+    highest_score: int
+    highest_score_not_out: bool
+    highest_score_display: str
+    fours: int
+    sixes: int
+    dot_balls: int
+    fifties: int
+    hundreds: int
+
+
+class PlayerBowlingStats(BaseModel):
+    innings: int
+    balls_bowled: int
+    overs: float
+    overs_str: str
+    runs_conceded: int
+    wickets: int
+    economy: float
+    # None until the player takes a wicket / bowls a ball respectively.
+    average: float | None = None
+    strike_rate: float | None = None
+    maidens: int
+    dot_balls: int
+    wides: int
+    no_balls: int
+    best_wickets: int | None = None
+    best_runs_conceded: int | None = None
+    best_display: str | None = None
+
+
+class PlayerFieldingStats(BaseModel):
+    # False when the database has no fielder attribution to count from.
+    available: bool = False
+    catches: int = 0
+    run_outs: int = 0
+    stumpings: int = 0
+    note: str | None = None
+
+
+class PlayerPerformanceResponse(BaseModel):
+    player_id: int
+    player_code: str
+    first_name: str
+    last_name: str
+    full_name: str
+    matches_played: int
+    innings_played: int
+    batting: PlayerBattingStats
+    bowling: PlayerBowlingStats
+    fielding: PlayerFieldingStats
+
+
+# --- Player profile ---------------------------------------------------------
+
+
+class PlayerStatsBlock(BaseModel):
+    """One slice of a player's record (career, or a single competition)."""
+
+    matches_played: int
+    innings_played: int
+    batting: PlayerBattingStats
+    bowling: PlayerBowlingStats
+    fielding: PlayerFieldingStats
+
+
+class PlayerCompetitionStats(PlayerStatsBlock):
+    # The TeamLevel the player's side plays at; the app's notion of a
+    # competition (IPL, World Cup, Ranji Trophy, ...). Zero/"Unknown competition"
+    # only if a side could not be resolved to a level.
+    level_id: int
+    level_name: str
+
+
+class PlayerProfileResponse(BaseModel):
+    # The player's own record, exactly as GET /players/{id} returns it.
+    player: PlayerResponse
+    # Totals across every completed match, the player's whole career.
+    career: PlayerStatsBlock
+    # The same figures broken down by competition, hardest competition name
+    # first. A competition appears only once the player has played in it.
+    competitions: list[PlayerCompetitionStats] = []

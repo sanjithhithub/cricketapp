@@ -27,6 +27,7 @@ sync_url = re.sub(r"\+aiosqlite", "", sync_url)
 config.set_main_option("sqlalchemy.url", sync_url)
 
 import app.scoring.models  # noqa: F401
+import app.tournaments.models  # noqa: F401
 from app.database import Base
 
 target_metadata = Base.metadata

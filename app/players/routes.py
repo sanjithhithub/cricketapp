@@ -12,6 +12,7 @@ from app.api_docs import (
 from app.auth.models import User
 from app.auth.security import get_current_user, require_admin
 from app.database import get_db
+from app.players.analytics import get_player_performance
 from app.players.crud import (
     DuplicateNameWarningError,
     DuplicatePhoneError,
@@ -34,6 +35,7 @@ from app.players.crud import (
 )
 from app.players.identity import full_name, mask_mobile
 from app.players.models import Player
+from app.players.profile import get_player_profile
 from app.players.schemas import (
     PlayerAliasCreate,
     PlayerAliasListResponse,
@@ -43,7 +45,9 @@ from app.players.schemas import (
     PlayerDuplicateDetail,
     PlayerDuplicateMatch,
     PlayerDuplicateRequest,
+    PlayerPerformanceResponse,
     PlayerProfileImageResponse,
+    PlayerProfileResponse,
     PlayerResponse,
     PlayerTeamAssignmentResponse,
     PlayerTeamInfo,
@@ -384,6 +388,61 @@ async def resend_otp_endpoint(
             else "New OTP could not be sent. Please check the SMS service configuration."
         ),
         otp_sent=otp_sent,
+    )
+
+
+@router.get(
+    "/players/{player_id}/performance",
+    response_model=PlayerPerformanceResponse,
+    responses={"404": NOT_FOUND},
+)
+async def get_player_performance_endpoint(
+    player_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Career performance for one player.
+
+    Counts only innings from matches this account owns. Batting covers matches,
+    innings, runs, average, strike rate, highest score and boundary counts;
+    bowling covers overs, wickets, economy, best figures, maidens, wides,
+    no-balls and dot balls. Fielding figures (catches, run-outs, stumpings) are
+    reported as unavailable because the delivery log does not record the fielder
+    who took the dismissal.
+    """
+    player = await get_player(db, player_id, current_user.id)
+    if not player:
+        raise HTTPException(404, "Player not found")
+    payload = await get_player_performance(db, player, current_user.id)
+    return PlayerPerformanceResponse.model_validate(payload)
+
+
+@router.get(
+    "/players/{player_id}/profile",
+    response_model=PlayerProfileResponse,
+    responses={"404": NOT_FOUND},
+)
+async def get_player_profile_endpoint(
+    player_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """A player's record: their details, career totals and per-competition splits.
+
+    Only completed matches count, and only those owned by this account. A player
+    is placed in a competition by the level (league) of the side they turned out
+    for, using the app's ``TeamLevel`` vocabulary (IPL, World Cup, Ranji Trophy,
+    ...). Fielding figures are reported as unavailable for the same reason as
+    ``GET /players/{player_id}/performance``: the delivery log records who was
+    dismissed, not the fielder.
+    """
+    player = await get_player(db, player_id, current_user.id)
+    if not player:
+        raise HTTPException(404, "Player not found")
+    payload = await get_player_profile(db, player, current_user.id)
+    return PlayerProfileResponse(
+        player=await _to_response(db, player, reveal_phone=_can_reveal_phone(current_user, player)),
+        **payload,
     )
 
 

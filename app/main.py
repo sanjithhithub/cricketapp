@@ -1,4 +1,6 @@
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from urllib.parse import quote
 
@@ -37,10 +39,37 @@ from app.scoring.routes import router as scoring_router
 from app.seed import seed_levels, seed_locations
 from app.storage import read_image
 from app.teams.routes import router as teams_router
+from app.tournaments.routes import router as tournaments_router
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Create tables on SQLite, seed reference data, then run.
+
+    Replaces the deprecated ``@app.on_event`` hooks: the context manager form
+    is what FastAPI moved to, and it guarantees the shutdown body runs even when
+    startup fails halfway - the engine is disposed either way.
+
+    ``create_all`` runs only on SQLite. Postgres is managed by Alembic
+    (``docker-entrypoint.sh`` runs ``alembic upgrade head`` before uvicorn), so
+    creating tables here would paper over a missing migration instead of
+    failing loudly on deploy.
+    """
+    if DATABASE_URL.startswith("sqlite"):
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    async for db in get_db():
+        await seed_locations(db)
+        await seed_levels(db)
+        break
+    yield
+    await engine.dispose()
+
 
 app = FastAPI(
     title="CricketApp",
     version="1.0.0",
+    lifespan=lifespan,
     description=(
         "Cricket scoring and team management.\n\n"
         "Every route is served under both `/v1` and `/api`; the two prefixes are "
@@ -163,6 +192,7 @@ routers = [
     (levels_router, [Depends(get_current_user)]),
     (matches_router, [Depends(get_current_user)]),
     (scoring_router, [Depends(get_current_user)]),
+    (tournaments_router, [Depends(get_current_user)]),
 ]
 for router, deps in routers:
     app.include_router(router, prefix=API_V1_PREFIX, dependencies=deps)
@@ -263,22 +293,6 @@ async def serve_upload(key: str):
         media_type=media_type,
         headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )
-
-
-@app.on_event("startup")
-async def startup():
-    if DATABASE_URL.startswith("sqlite"):
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-    async for db in get_db():
-        await seed_locations(db)
-        await seed_levels(db)
-        break
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    await engine.dispose()
 
 
 @app.get("/health", response_model=HealthResponse, tags=["health"])

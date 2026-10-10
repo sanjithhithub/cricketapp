@@ -34,6 +34,7 @@ def _models_metadata():
     import app.players.models  # noqa: F401
     import app.scoring.models  # noqa: F401
     import app.teams.models  # noqa: F401
+    import app.tournaments.models  # noqa: F401
     from app.database import Base
 
     return Base.metadata

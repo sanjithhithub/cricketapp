@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field, field_validator
+from datetime import date
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.enums import SquadRole, coerce_enum
 from app.players.schemas import PlayerTeamInfo
@@ -51,8 +53,7 @@ class PlayerOnTeam(BaseModel):
     player_code: str | None = None
     email: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TeamLogoResponse(BaseModel):
@@ -76,8 +77,7 @@ class TeamPlayerAddResponse(BaseModel):
 class TeamResponse(TeamBase):
     id: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TeamOption(BaseModel):
@@ -86,8 +86,7 @@ class TeamOption(BaseModel):
     short_name: str
     logo: str | None = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TeamListItem(BaseModel):
@@ -166,8 +165,7 @@ class SquadPlayer(BaseModel):
     is_captain: bool = False
     is_vice_captain: bool = False
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TeamCaptainsSet(BaseModel):
@@ -227,5 +225,181 @@ class TeamDetailResponse(TeamBase):
     substitutes: list[SquadPlayer] = []
     bench: list[SquadPlayer] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+
+
+# --- Team analytics ---------------------------------------------------------
+
+
+class TeamRecentForm(BaseModel):
+    """One entry in a team's recent form, most recent first."""
+
+    match_id: int
+    match_date: date
+    match_type: str
+    opponent_id: int | None = None
+    opponent_name: str | None = None
+    # "win" | "loss" | "draw" (an exact tie, or a match with no winner).
+    result: str
+    # "W" | "L" | "D", the compact form used to build ``recent_form_string``.
+    result_code: str
+    team_score: int | None = None
+    opponent_score: int | None = None
+    margin: str | None = None
+
+
+class TeamTopRunScorer(BaseModel):
+    player_id: int
+    first_name: str | None = None
+    last_name: str | None = None
+    full_name: str
+    player_code: str | None = None
+    innings: int
+    runs: int
+    balls_faced: int
+    fours: int
+    sixes: int
+    highest_score: int
+    strike_rate: float
+
+
+class TeamTopWicketTaker(BaseModel):
+    player_id: int
+    first_name: str | None = None
+    last_name: str | None = None
+    full_name: str
+    player_code: str | None = None
+    innings: int
+    wickets: int
+    balls_bowled: int
+    overs: float
+    overs_str: str
+    runs_conceded: int
+    economy: float
+    best_wickets: int | None = None
+    best_runs_conceded: int | None = None
+    best_display: str | None = None
+
+
+class TeamAnalyticsResponse(BaseModel):
+    """A team's record across the completed matches this account owns.
+
+    Fielding figures are absent because the delivery log records who was
+    dismissed, never the fielder.
+    """
+
+    team_id: int
+    team_name: str
+    short_name: str
+    matches_played: int
+    wins: int
+    losses: int
+    # Exact ties / no-results. Counted in ``matches_played`` and in the win
+    # percentage denominator, so the three always add up.
+    draws: int = 0
+    win_percentage: float
+    runs_scored: int
+    runs_conceded: int
+    highest_score: int | None = None
+    lowest_score: int | None = None
+    # Runs scored per completed innings, and per over.
+    average_score: float | None = None
+    average_run_rate: float = 0.0
+    recent_form: list[TeamRecentForm] = []
+    # e.g. "W-W-L-W-L" - recent_form with each result reduced to one letter.
+    recent_form_string: str = ""
+    top_run_scorer: TeamTopRunScorer | None = None
+    top_wicket_taker: TeamTopWicketTaker | None = None
+
+
+# --- Head-to-head -----------------------------------------------------------
+
+
+class HeadToHeadRecentResult(BaseModel):
+    """One meeting between two sides, most recent first."""
+
+    match_id: int
+    match_date: date
+    match_type: str
+    venue: str | None = None
+    team_score: int | None = None
+    opponent_score: int | None = None
+    # Result from ``team``'s point of view: "win" | "loss" | "draw".
+    result: str
+    result_code: str
+    winner_team_id: int | None = None
+    margin: str | None = None
+    player_of_match_id: int | None = None
+    player_of_match_name: str | None = None
+
+
+class HeadToHeadBattingPerformance(BaseModel):
+    """The best single batting innings of the rivalry."""
+
+    player_id: int
+    first_name: str | None = None
+    last_name: str | None = None
+    full_name: str
+    player_code: str | None = None
+    team_id: int
+    match_id: int
+    match_date: date
+    runs: int
+    balls_faced: int
+    fours: int
+    sixes: int
+    out: bool
+    strike_rate: float
+
+
+class HeadToHeadBowlingPerformance(BaseModel):
+    """The best single bowling spell of the rivalry."""
+
+    player_id: int
+    first_name: str | None = None
+    last_name: str | None = None
+    full_name: str
+    player_code: str | None = None
+    team_id: int
+    match_id: int
+    match_date: date
+    wickets: int
+    runs_conceded: int
+    balls_bowled: int
+    overs: float
+    overs_str: str
+    maidens: int
+    economy: float
+
+
+class HeadToHeadAnalyticsResponse(BaseModel):
+    """Two teams' record against each other over their completed matches.
+
+    Every figure is drawn from the scorecards, and each match's winner is derived
+    with the same rules as the match summary, so the rivalry cannot disagree with
+    the individual matches. Only completed matches this account owns are counted.
+    """
+
+    team_id: int
+    team_name: str
+    team_short_name: str
+    opponent_id: int
+    opponent_name: str
+    opponent_short_name: str
+    matches_played: int
+    team_wins: int
+    opponent_wins: int
+    # Exact ties / no-results. Counted in ``matches_played`` so the three add up.
+    draws: int = 0
+    team_win_percentage: float
+    team_highest_score: int | None = None
+    team_lowest_score: int | None = None
+    opponent_highest_score: int | None = None
+    opponent_lowest_score: int | None = None
+    recent_results: list[HeadToHeadRecentResult] = []
+    # e.g. "W-L-W" - recent_results from ``team``'s point of view.
+    recent_form_string: str = ""
+    # Best individual batting innings, most runs first.
+    top_batting: list[HeadToHeadBattingPerformance] = []
+    # Best individual bowling spells, most wickets first.
+    top_bowling: list[HeadToHeadBowlingPerformance] = []

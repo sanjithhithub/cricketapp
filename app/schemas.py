@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.players.identity import normalize_country_code
 
@@ -9,8 +9,7 @@ class LocationOut(BaseModel):
     id: int
     name: str
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class StateOut(BaseModel):
@@ -18,8 +17,7 @@ class StateOut(BaseModel):
     name: str
     cities: list[LocationOut] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CountryOut(BaseModel):
@@ -27,8 +25,7 @@ class CountryOut(BaseModel):
     name: str
     states: list[StateOut] = []
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CountryCodeOut(BaseModel):

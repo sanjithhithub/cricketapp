@@ -105,6 +105,19 @@ class BatsmanCard:
 
 
 @dataclass
+class FallOfWicket:
+    wicket_number: int
+    score: int
+    player_id: int
+    first_name: str | None = None
+    last_name: str | None = None
+    player_code: str | None = None
+    over_number: int = 0
+    ball_number: int = 0
+    overs_str: str = "0.0"
+
+
+@dataclass
 class BowlerCard:
     player_id: int
     first_name: str | None = None
@@ -117,6 +130,10 @@ class BowlerCard:
     runs_conceded: int = 0
     wickets: int = 0
     economy: float = 0.0
+    # Wides and no-balls the bowler conceded. They cost runs and do not count
+    # as legal balls, so they are reported separately from the over count.
+    wides: int = 0
+    no_balls: int = 0
 
 
 @dataclass
@@ -128,6 +145,9 @@ class ScorecardDTO:
     bowling_team_id: int
     total: int = 0
     wickets: int = 0
+    # One entry per wicket that fell, in the order they fell: the score at the
+    # fall (team total including this delivery), the over.ball and who fell.
+    fall_of_wickets: list["FallOfWicket"] = field(default_factory=list)
     legal_balls: int = 0
     overs_bowled: float = 0.0
     overs_bowled_str: str = "0.0"
@@ -218,12 +238,13 @@ class ScoreEngine:
         if state.completed:
             raise InningsEndedError(f"Innings already completed ({state.end_reason})")
 
+        batting_ids = {b.player_id for b in order}
         self._validate_input(
             delivery_input,
             state,
             max_over_limit=self._max_over_per_player(match, innings),
+            batting_ids=batting_ids,
         )
-        batting_ids = {b.player_id for b in order}
         if delivery_input.bowler_id in batting_ids:
             raise InvalidDeliveryError(
                 f"bowler {delivery_input.bowler_id} is in the batting order and cannot bowl"
@@ -335,21 +356,25 @@ class ScoreEngine:
             if player_id is not None:
                 at_crease.add(player_id)
 
-        # The delivery that first reaches the chase target wins the match: its
-        # wicket (if any) must not be credited to anyone, mirroring _replay.
-        target_delivery_id = None
-        if innings.target is not None:
-            running = 0
-            for d in deliveries:
-                running += d.runs_batsman + d.runs_extras
-                if running >= innings.target:
-                    target_delivery_id = d.id
-                    break
-
+        # Fall-of-wicket needs the team total at the instant each wicket fell,
+        # so it is tracked alongside the per-batsman stats below. The same
+        # running total finds the delivery that first reaches the chase target:
+        # that winning ball's wicket (if any) must not be credited to anyone,
+        # mirroring _replay. Folded into this pass rather than a separate
+        # pre-scan - the total was being accumulated twice over every delivery.
+        running_score = 0
+        fow_records: list[dict] = []
+        target_reached = False
         for d in deliveries:
             extra = self._normalize_extra(d)
             wicket = self._normalize_wicket(d)
-            winning_ball = d.id == target_delivery_id
+            running_score += d.runs_batsman + d.runs_extras
+            winning_ball = (
+                not target_reached
+                and innings.target is not None
+                and running_score >= innings.target
+            )
+            target_reached = target_reached or winning_ball
 
             if d.striker_id in bat_stats:
                 # A wide is not faced by the batsman; a no-ball IS faced but
@@ -369,6 +394,15 @@ class ScoreEngine:
             ):
                 bat_stats[d.dismissed_player_id]["out"] = True
                 bat_stats[d.dismissed_player_id]["dismissal"] = wicket.value if wicket else "out"
+                fow_records.append(
+                    {
+                        "wicket_number": len(fow_records) + 1,
+                        "score": running_score,
+                        "player_id": d.dismissed_player_id,
+                        "over_number": d.over_number,
+                        "ball_number": d.ball_number,
+                    }
+                )
 
             # A bowler always belongs to the fielding side. A delivery recorded
             # with a bowler from the batting side is corrupt data: credit no
@@ -378,7 +412,8 @@ class ScoreEngine:
                 continue
 
             bl = bowler_stats.setdefault(
-                d.bowler_id, {"balls": 0, "runs": 0, "wickets": 0, "by_over": {}}
+                d.bowler_id,
+                {"balls": 0, "runs": 0, "wickets": 0, "wides": 0, "no_balls": 0, "by_over": {}},
             )
             # Byes and leg byes are not charged to the bowler. Wides and
             # no-balls are: the bowler concedes the whole delivery.
@@ -388,6 +423,10 @@ class ScoreEngine:
                 else d.runs_batsman
             )
             bl["runs"] += conceded
+            if extra == ExtraType.WIDE:
+                bl["wides"] += 1
+            elif extra == ExtraType.NO_BALL:
+                bl["no_balls"] += 1
             # Wides and no-balls are charged to the bowler but are not balls of
             # the over, so a bowler's figures count LEGAL balls only. A maiden
             # therefore needs 6 legal balls and no runs — and any wide/no-ball
@@ -446,9 +485,26 @@ class ScoreEngine:
                     runs_conceded=bl["runs"],
                     wickets=bl["wickets"],
                     economy=round(bl["runs"] / (bl["balls"] / 6), 2) if bl["balls"] else 0.0,
+                    wides=bl["wides"],
+                    no_balls=bl["no_balls"],
                 )
             )
         bowlers.sort(key=lambda c: c.player_id)
+
+        fall_of_wickets = [
+            FallOfWicket(
+                wicket_number=r["wicket_number"],
+                score=r["score"],
+                player_id=r["player_id"],
+                first_name=identities.get(r["player_id"], (None, None, None))[0],
+                last_name=identities.get(r["player_id"], (None, None, None))[1],
+                player_code=identities.get(r["player_id"], (None, None, None))[2],
+                over_number=r["over_number"],
+                ball_number=r["ball_number"],
+                overs_str=f"{r['over_number'] - 1}.{r['ball_number']}",
+            )
+            for r in fow_records
+        ]
 
         full, rem = divmod(state.legal_balls, 6)
         return ScorecardDTO(
@@ -477,11 +533,23 @@ class ScoreEngine:
             non_striker_id=state.non_striker,
             batsmen=batsmen,
             bowlers=bowlers,
+            fall_of_wickets=fall_of_wickets,
         )
 
     def _validate_input(
-        self, inp: DeliveryInput, state: _ReplayState, max_over_limit: int | None = None
+        self,
+        inp: DeliveryInput,
+        state: _ReplayState,
+        max_over_limit: int | None = None,
+        batting_ids: set[int] | None = None,
     ) -> None:
+        if inp.striker_id == inp.non_striker_id:
+            # Two names for one end each. Without this, filling a vacancy with
+            # the surviving partner (the vacant end plus the same player again)
+            # would put one man at both ends: strike rotation becomes a no-op,
+            # and his runs would be counted once per delivery while appearing
+            # twice on the crease report.
+            raise InvalidDeliveryError("striker and non-striker must be different players")
         if inp.striker_id == inp.bowler_id or inp.non_striker_id == inp.bowler_id:
             raise InvalidDeliveryError("bowler cannot also be a batsman at the crease")
         if inp.striker_id != state.striker or inp.non_striker_id != state.non_striker:
@@ -510,6 +578,15 @@ class ScoreEngine:
                 raise InvalidDeliveryError("bowler cannot also be a batsman at the crease")
             if incoming in state.dismissed:
                 raise InvalidBatsmanError(f"player {incoming} has already been dismissed")
+            # The vacancy is the one moment a new player can enter the crease, so
+            # it is also the one moment the engine can insist he belongs on the
+            # card. A player outside the batting order would have his runs
+            # counted in the team total but land on no batsman card - a silent
+            # scoring bug rather than an error the scorer can see. The real flow
+            # never hits this: POST /batting-order upserts the pick into the
+            # order before the delivery arrives. This rejects the client bug.
+            if batting_ids is not None and incoming not in batting_ids:
+                raise InvalidBatsmanError(f"player {incoming} is not in the batting order")
         if inp.runs_batsman < 0 or inp.runs_extras < 0:
             raise InvalidDeliveryError("runs cannot be negative")
         if inp.extra_type == ExtraType.NONE and inp.runs_extras != 0:

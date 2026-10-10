@@ -1,5 +1,3 @@
-from datetime import datetime
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -7,6 +5,7 @@ from sqlalchemy.orm import selectinload
 from app.models import OTP, Country, State
 from app.players.identity import normalize_country_code
 from app.sms import verify_otp
+from app.timeutils import utcnow
 
 
 async def get_all_countries(db: AsyncSession):
@@ -55,7 +54,7 @@ async def verify_otp_code(
     mobile_number: str | int,
     otp_code: str,
 ):
-    now = datetime.utcnow()
+    now = utcnow()
     result = await db.execute(
         select(OTP)
         .where(

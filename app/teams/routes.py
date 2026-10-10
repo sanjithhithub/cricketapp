@@ -19,6 +19,7 @@ from app.players.crud import (
     get_available_players_for_team,
 )
 from app.players.schemas import PlayerDropdownItem, TeamPlayerByPhone
+from app.teams.analytics import get_head_to_head_analytics, get_team_analytics
 from app.teams.crud import (
     create_team,
     delete_team,
@@ -32,7 +33,9 @@ from app.teams.crud import (
     update_team,
 )
 from app.teams.schemas import (
+    HeadToHeadAnalyticsResponse,
     PlayerBulkAssignResponse,
+    TeamAnalyticsResponse,
     TeamBulkPlayerAdd,
     TeamCaptainsResponse,
     TeamCaptainsSet,
@@ -144,6 +147,67 @@ async def get_team_squad_endpoint(
     if not squad:
         raise HTTPException(404, "Team not found")
     return squad
+
+
+@router.get(
+    "/teams/{team_id}/analytics",
+    response_model=TeamAnalyticsResponse,
+    responses={"404": NOT_FOUND},
+)
+async def get_team_analytics_endpoint(
+    team_id: int,
+    recent: int = Query(5, ge=1, le=20, description="How many recent results to return"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """A team's record across its completed matches.
+
+    Covers matches played, wins, losses, draws, win percentage, runs scored and
+    conceded, highest and lowest innings, average score and scoring rate, recent
+    form (``recent`` results, most recent first), the leading run scorer and the
+    leading wicket taker. Only completed matches this account owns are counted,
+    and the winner of each is derived with the same rules as the match summary.
+    """
+    team = await get_team(db, team_id, current_user.id)
+    if not team:
+        raise HTTPException(404, "Team not found")
+    payload = await get_team_analytics(db, team, current_user.id, recent=recent)
+    return TeamAnalyticsResponse.model_validate(payload)
+
+
+@router.get(
+    "/teams/{team_id}/head-to-head/{opponent_id}",
+    response_model=HeadToHeadAnalyticsResponse,
+    responses={"400": BAD_REQUEST, "404": NOT_FOUND},
+)
+async def get_head_to_head_endpoint(
+    team_id: int,
+    opponent_id: int,
+    recent: int = Query(5, ge=1, le=20, description="How many recent meetings to return"),
+    top: int = Query(5, ge=1, le=25, description="How many top performances per discipline"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Two teams' record against each other across their completed matches.
+
+    Reports the total meetings, wins for each side, the recent results (``recent``
+    meetings, most recent first) as a form string, each side's highest and lowest
+    innings, and the best individual batting and bowling performances from those
+    matches (``top`` per discipline). Only completed matches this account owns are
+    counted, and each winner is derived with the same rules as the match summary.
+    """
+    if team_id == opponent_id:
+        raise HTTPException(400, "A team cannot play itself.")
+    team = await get_team(db, team_id, current_user.id)
+    if not team:
+        raise HTTPException(404, "Team not found")
+    opponent = await get_team(db, opponent_id, current_user.id)
+    if not opponent:
+        raise HTTPException(404, "Opponent team not found")
+    payload = await get_head_to_head_analytics(
+        db, team, opponent, current_user.id, recent=recent, top=top
+    )
+    return HeadToHeadAnalyticsResponse.model_validate(payload)
 
 
 @router.put(

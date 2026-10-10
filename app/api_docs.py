@@ -175,6 +175,10 @@ OPENAPI_TAGS: list[dict[str, Any]] = [
     {"name": "teams", "description": "Teams, squads, captaincy and squad membership."},
     {"name": "matches", "description": "Match fixtures and their result."},
     {"name": "scoring", "description": "Live scoring: innings, deliveries and scorecards."},
+    {
+        "name": "tournaments",
+        "description": "Competitions: teams, fixtures, points table and leaderboards.",
+    },
     {"name": "levels", "description": "Competition levels a team can be registered at."},
     {"name": "reference", "description": "Countries, states, cities and dial codes."},
     {"name": "health", "description": "Liveness probe."},

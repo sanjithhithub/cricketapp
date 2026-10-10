@@ -570,6 +570,60 @@ def test_a_vacant_end_must_be_filled_by_the_delivery():
     asyncio.run(scenario())
 
 
+def test_one_player_cannot_hold_both_ends():
+    """Naming the same man striker and non-striker is rejected outright.
+
+    Without this, filling a vacancy with the surviving partner would put one
+    player at both ends: strike rotation becomes a no-op and his runs are
+    counted once per delivery while the crease report shows him twice.
+    """
+
+    async def scenario():
+        engine, _ = make_fake([1, 2, 3])
+        with pytest.raises(InvalidDeliveryError, match="different players"):
+            await ball(engine, 1, 1)
+
+        # The vacancy case: striker 1 is out, and the scorer "fills" the empty
+        # end with the surviving non-striker 2 again.
+        await ball(engine, 1, 2, wicket_type=WicketType.BOWLED, dismissed_player_id=1)
+        with pytest.raises(InvalidDeliveryError, match="different players"):
+            await ball(engine, 2, 2)
+
+        # The legal fill still works.
+        await ball(engine, 3, 2)
+        card = await engine.get_scorecard(7)
+        assert (card.striker_id, card.non_striker_id) == (3, 2)
+
+    asyncio.run(scenario())
+
+
+def test_vacancy_fill_must_be_a_player_in_the_batting_order():
+    """An outsider sent in during a vacancy is rejected, not silently absorbed.
+
+    Runs by a player outside the order still reached the team total but landed
+    on no batsman card - the card and the total then disagreed with no error
+    anywhere. The real flow is unaffected: POST /batting-order upserts the pick
+    into the order before the delivery arrives.
+    """
+
+    async def scenario():
+        engine, _ = make_fake([1, 2])
+        await ball(engine, 1, 2, wicket_type=WicketType.BOWLED, dismissed_player_id=1)
+
+        # Player 3 is real to the client but absent from this innings's order.
+        with pytest.raises(InvalidBatsmanError, match="not in the batting order"):
+            await ball(engine, 3, 2)
+
+        # Adding him to the order first (what /batting-order does) is accepted.
+        engine.repo.order.append(FakeBatsman(player_id=3, position=3))
+        await ball(engine, 3, 2)
+        card = await engine.get_scorecard(7)
+        assert (card.striker_id, card.non_striker_id) == (3, 2)
+        assert card.total == 0
+
+    asyncio.run(scenario())
+
+
 def test_manual_pick_resumes_the_innings():
     async def scenario():
         engine, repo = make_fake([1, 2])
@@ -678,5 +732,25 @@ def test_scorecard_reports_current_crease():
         # A wicket vacates the striker end until the scorer picks who comes in.
         assert card.striker_id is None
         assert card.non_striker_id == 1
+
+    asyncio.run(scenario())
+
+
+def test_fall_of_wickets_reports_score_and_over():
+    async def scenario():
+        engine, _ = make_fake([1, 2, 3])
+        await ball(engine, 1, 2, runs_batsman=4)
+        await ball(engine, 1, 2, wicket_type=WicketType.BOWLED, dismissed_player_id=1)
+        # The incoming batsman (3) fills the vacant striker end.
+        await ball(engine, 3, 2, runs_batsman=2)
+        await ball(engine, 3, 2, wicket_type=WicketType.CAUGHT, dismissed_player_id=3)
+
+        card = await engine.get_scorecard(7)
+        fow = card.fall_of_wickets
+        assert len(fow) == 2
+        assert (fow[0].wicket_number, fow[0].score, fow[0].player_id) == (1, 4, 1)
+        assert (fow[0].over_number, fow[0].ball_number, fow[0].overs_str) == (1, 2, "0.2")
+        assert (fow[1].wicket_number, fow[1].score, fow[1].player_id) == (2, 6, 3)
+        assert (fow[1].over_number, fow[1].ball_number, fow[1].overs_str) == (1, 4, "0.4")
 
     asyncio.run(scenario())

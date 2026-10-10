@@ -5,6 +5,7 @@ from app.api_docs import BAD_REQUEST, CONFLICT, NOT_FOUND
 from app.auth.models import User
 from app.auth.security import get_current_user, require_admin
 from app.database import get_db
+from app.scoring.analytics import get_match_analytics
 from app.scoring.crud import (
     ScoringRepository,
     add_batsman,
@@ -27,6 +28,7 @@ from app.scoring.enums import MatchStatus
 from app.scoring.schemas import (
     AddBatsmanRequest,
     DeliveryCreate,
+    MatchAnalyticsResponse,
     MatchSummaryResponse,
     ScorecardResponse,
     StartInningsRequest,
@@ -236,3 +238,31 @@ async def get_match_summary_endpoint(
         await db.refresh(match)
     payload = await get_match_summary(db, match)
     return MatchSummaryResponse.model_validate(payload)
+
+
+@router.get(
+    "/matches/{match_id}/analytics",
+    response_model=MatchAnalyticsResponse,
+    responses={"404": NOT_FOUND},
+)
+async def get_match_analytics_endpoint(
+    match_id: int,
+    innings_number: int | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ball-by-ball analytics for a match.
+
+    Every delivery in chronological order (runs, extras, dismissal, running
+    score and run rate), an over-by-over breakdown, the scoring pattern (dots,
+    singles, twos, threes, fours, sixes, boundaries), an extras breakdown
+    (wides, no-balls, byes, leg byes) and the progression of the run rate.
+
+    Pass ``innings_number`` to limit the payload to one innings; omit it to get
+    every innings of the match, including any Super Over (numbered 3, 4, ...).
+    """
+    match = await get_match(db, match_id, current_user.id)
+    if not match:
+        raise HTTPException(404, "Scoring match not found")
+    payload = await get_match_analytics(db, match, innings_number)
+    return MatchAnalyticsResponse.model_validate(payload)
