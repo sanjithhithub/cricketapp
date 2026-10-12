@@ -66,6 +66,10 @@ class DeliveryInput:
     extra_type: ExtraType = ExtraType.NONE
     wicket_type: WicketType | None = None
     dismissed_player_id: int | None = None
+    # The fielder credited with the dismissal (catch, run out, stumping). Does
+    # not affect the score at all; it is recorded only so fielding figures can
+    # be attributed later.
+    fielder_id: int | None = None
 
 
 @dataclass
@@ -81,6 +85,7 @@ class DeliveryRecord:
     extra_type: str
     wicket_type: str | None = None
     dismissed_player_id: int | None = None
+    fielder_id: int | None = None
     id: int | None = None
 
 
@@ -222,6 +227,7 @@ class _ReplayState:
 class ScoreEngine:
     def __init__(self, repo: ScoreRepository):
         self.repo = repo
+        self._state_cache = {}  # (innings_id, delivery_count) -> state
 
     async def apply_delivery(
         self, innings_id: int, delivery_input: DeliveryInput
@@ -273,6 +279,7 @@ class ScoreEngine:
             extra_type=delivery_input.extra_type.value,
             wicket_type=delivery_input.wicket_type.value if delivery_input.wicket_type else None,
             dismissed_player_id=delivery_input.dismissed_player_id,
+            fielder_id=delivery_input.fielder_id,
         )
         return await self.repo.add_delivery(record)
 
@@ -330,7 +337,12 @@ class ScoreEngine:
                 bowlers=[],
             )
 
-        state = self._replay(innings, match, deliveries, order)
+        cache_key = (innings_id, len(deliveries))
+        if cache_key in self._state_cache:
+            state = self._state_cache[cache_key]
+        else:
+            state = self._replay(innings, match, deliveries, order)
+            self._state_cache[cache_key] = state
 
         ordered = sorted(order, key=lambda b: b.position)
         bat_stats = {

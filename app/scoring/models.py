@@ -59,5 +59,9 @@ class Delivery(Base):
     extra_type: Mapped[str] = mapped_column(String(20), default=ExtraType.NONE.value)
     wicket_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     dismissed_player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
+    # The fielder credited with a caught, run out or stumped dismissal. Optional
+    # because older deliveries predate the column and because bowled/lbw/hit
+    # wicket have no fielder; NULL means "not attributed", never "no one".
+    fielder_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), nullable=True)
 
     innings: Mapped["Innings"] = relationship(back_populates="deliveries")

@@ -61,6 +61,7 @@ def _to_delivery_input(data: DeliveryCreate) -> DeliveryInput:
         extra_type=ExtraType(data.extra_type),
         wicket_type=WicketType(data.wicket_type) if data.wicket_type else None,
         dismissed_player_id=data.dismissed_player_id,
+        fielder_id=data.fielder_id,
     )
 
 
@@ -94,7 +95,6 @@ async def submit_delivery(
 
     await db.commit()
 
-    engine = ScoreEngine(ScoringRepository(db))
     try:
         scorecard = await engine.get_scorecard(innings.id)
     except ScoreEngineError as exc:

@@ -18,6 +18,10 @@ class DeliveryCreate(BaseModel):
     runs_extras: int = Field(0, ge=0)
     wicket_type: WicketType | None = None
     dismissed_player_id: int | None = None
+    # Optional fielding credit for a caught, run out or stumped dismissal. It
+    # never affects the score; omitting it simply leaves the dismissal
+    # unattributed, so older clients keep working unchanged.
+    fielder_id: int | None = None
 
     @field_validator("wicket_type", mode="before")
     @classmethod
@@ -82,6 +86,17 @@ class DeliveryCreate(BaseModel):
             raise ValueError("dismissed_player_id cannot be set without a wicket")
         if v is not None and v not in (striker, non_striker):
             raise ValueError("dismissed player must be the striker or non-striker")
+        return v
+
+    @field_validator("fielder_id")
+    @classmethod
+    def validate_fielder(cls, v, info):
+        # A fielder is meaningless on a delivery with no dismissal; it is the
+        # mirror of the dismissed_player_id rule above. Whether the wicket type
+        # even has a fielder is left to the client - a bowled dismissal may
+        # still carry one (a deflection), and older data has none at all.
+        if v is not None and info.data.get("wicket_type") is None:
+            raise ValueError("fielder_id cannot be set without a wicket")
         return v
 
 

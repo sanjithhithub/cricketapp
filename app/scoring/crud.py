@@ -13,6 +13,7 @@ from app.teams.models import PlayerTeamAssignment, Team
 class ScoringRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
+        self._identities_cache = {}
 
     async def get_innings(self, innings_id: int):
         result = await self.db.execute(select(Innings).where(Innings.id == innings_id))
@@ -47,12 +48,23 @@ class ScoringRepository:
         ids = {pid for pid in player_ids if pid is not None}
         if not ids:
             return {}
-        result = await self.db.execute(
-            select(Player.id, Player.first_name, Player.last_name, Player.player_code).where(
-                Player.id.in_(ids)
+        # Check cache
+        missing = ids - set(self._identities_cache.keys())
+        result = {}
+        # Add cached
+        for pid in ids:
+            if pid in self._identities_cache:
+                result[pid] = self._identities_cache[pid]
+        if missing:
+            db_result = await self.db.execute(
+                select(Player.id, Player.first_name, Player.last_name, Player.player_code).where(
+                    Player.id.in_(missing)
+                )
             )
-        )
-        return {row[0]: (row[1], row[2], row[3]) for row in result.all()}
+            for row in db_result.all():
+                self._identities_cache[row[0]] = (row[1], row[2], row[3])
+                result[row[0]] = (row[1], row[2], row[3])
+        return result
 
     async def add_delivery(self, record: DeliveryRecord):
         delivery = Delivery(
@@ -67,6 +79,7 @@ class ScoringRepository:
             extra_type=record.extra_type,
             wicket_type=record.wicket_type,
             dismissed_player_id=record.dismissed_player_id,
+            fielder_id=record.fielder_id,
         )
         self.db.add(delivery)
         await self.db.flush()

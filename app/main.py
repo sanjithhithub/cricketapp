@@ -24,6 +24,7 @@ from app.crud import (
     verify_otp_code,
 )
 from app.database import DATABASE_URL, Base, engine, get_db
+from app.leaderboards.routes import router as leaderboards_router
 from app.levels.routes import router as levels_router
 from app.matches.routes import router as matches_router
 from app.players.crud import mark_player_phone_verified
@@ -40,6 +41,7 @@ from app.seed import seed_levels, seed_locations
 from app.storage import read_image
 from app.teams.routes import router as teams_router
 from app.tournaments.routes import router as tournaments_router
+from app.visualization.routes import router as visualization_router
 
 
 @asynccontextmanager
@@ -193,6 +195,8 @@ routers = [
     (matches_router, [Depends(get_current_user)]),
     (scoring_router, [Depends(get_current_user)]),
     (tournaments_router, [Depends(get_current_user)]),
+    (leaderboards_router, [Depends(get_current_user)]),
+    (visualization_router, [Depends(get_current_user)]),
 ]
 for router, deps in routers:
     app.include_router(router, prefix=API_V1_PREFIX, dependencies=deps)
