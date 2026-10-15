@@ -561,11 +561,14 @@ class PlayerBowlingStats(BaseModel):
 
 
 class PlayerFieldingStats(BaseModel):
-    # False when the database has no fielder attribution to count from.
-    available: bool = False
+    # True when fielder attribution exists to count from. A dismissal credits a
+    # fielder only where the delivery log names one; deliveries scored before
+    # attribution existed contribute nothing, so the note explains the limit.
+    available: bool = True
     catches: int = 0
     run_outs: int = 0
     stumpings: int = 0
+    total_dismissals: int = 0
     note: str | None = None
 
 

@@ -8,10 +8,12 @@ Participation is scoped to the requesting account: only innings belonging to
 matches owned by ``user_id`` are counted, exactly like the rest of the player
 API.
 
-Fielding data (catches, run-outs and stumpings credited to a fielder) is not
-recorded anywhere in the delivery log - a delivery stores only the batsman who
-was dismissed, not who took the catch - so those figures are reported as
-unavailable rather than guessed.
+Fielding figures (catches, run-outs and stumpings) are counted from the
+``fielder_id`` a dismissal may carry. Attribution is optional - deliveries
+scored before the column existed, and dismissals that belong to nobody (a
+bowled, an unattributed run out), carry none - so a fielder is credited only
+where the log names them. The delivery that first reaches a chase target never
+registers its wicket, so it cannot credit a fielder either, mirroring the engine.
 
 The per-innings accumulation lives in :class:`PlayerStatsAccumulator` so the
 career-performance endpoint and the profile endpoint derive identical figures
@@ -25,14 +27,23 @@ from app.matches.models import Match
 from app.players.identity import full_name
 from app.scoring.crud import ScoringRepository
 from app.scoring.engine import ScoreEngine, ScoreEngineError
-from app.scoring.enums import ExtraType, MatchStatus
+from app.scoring.enums import ExtraType, MatchStatus, WicketType
 from app.scoring.models import Delivery, Innings, InningsBatsman
 
 _ILLEGAL_BALL_EXTRAS = (ExtraType.WIDE.value, ExtraType.NO_BALL.value)
 
+# Only these dismissals can be credited to a fielder; bowled, lbw and hit wicket
+# are the bowler's alone.
+_FIELDING_WICKETS = {
+    WicketType.CAUGHT.value: "catches",
+    WicketType.RUN_OUT.value: "run_outs",
+    WicketType.STUMPED.value: "stumpings",
+}
+
 FIELDING_NOTE = (
-    "Fielding figures are not stored: a dismissal records who was out, "
-    "not the fielder who caught, ran out or stumped them."
+    "Fielding is counted only where the delivery log attributes it: a catch, "
+    "run out or stumping credited to this player. Deliveries scored before "
+    "fielder attribution existed contribute nothing."
 )
 
 
@@ -78,6 +89,58 @@ def _empty_bowling() -> dict:
     }
 
 
+def _empty_fielding() -> dict:
+    return {"catches": 0, "run_outs": 0, "stumpings": 0}
+
+
+def _winning_delivery_id(innings: Innings, deliveries) -> int | None:
+    """The delivery that first reaches the chase target, if any.
+
+    Mirrors the engine: the run chase ends the instant the target is reached and
+    a wicket on that same delivery is never registered, so it must not credit a
+    fielder either.
+    """
+    if innings.target is None:
+        return None
+    running = 0
+    for d in deliveries:
+        running += d.runs_batsman + d.runs_extras
+        if running >= innings.target:
+            return d.id
+    return None
+
+
+def fielding_counts(innings: Innings, deliveries, player_id: int) -> dict:
+    """Catches, run-outs and stumpings this player is credited with in one innings.
+
+    A delivery credits a fielder only when it names one and carries a
+    fielding dismissal; the winning ball of a chase is skipped, exactly as the
+    engine skips its wicket. Exposed so a caller reporting one innings at a time
+    can reuse the same rule as the accumulator.
+    """
+    winning_id = _winning_delivery_id(innings, deliveries)
+    counts = _empty_fielding()
+    for d in deliveries:
+        if d.id == winning_id or d.fielder_id != player_id or not d.wicket_type:
+            continue
+        bucket = _FIELDING_WICKETS.get(d.wicket_type)
+        if bucket is not None:
+            counts[bucket] += 1
+    return counts
+
+
+def fielding_block(counts: dict) -> dict:
+    """The response body for a fielding tally."""
+    return {
+        "available": True,
+        "catches": counts["catches"],
+        "run_outs": counts["run_outs"],
+        "stumpings": counts["stumpings"],
+        "total_dismissals": counts["catches"] + counts["run_outs"] + counts["stumpings"],
+        "note": FIELDING_NOTE,
+    }
+
+
 class PlayerStatsAccumulator:
     """Running totals for one player, fed one innings at a time.
 
@@ -90,6 +153,7 @@ class PlayerStatsAccumulator:
         self.matches: set[int] = set()
         self.batting = _empty_batting()
         self.bowling = _empty_bowling()
+        self.fielding = _empty_fielding()
 
     def add_innings(self, innings: Innings, card, player_id: int, deliveries) -> None:
         self.matches.add(innings.match_id)
@@ -152,6 +216,10 @@ class PlayerStatsAccumulator:
             if d.bowler_id == player_id:
                 self.bowling["dot_balls"] += 1
 
+        counts = fielding_counts(innings, deliveries, player_id)
+        for bucket in self.fielding:
+            self.fielding[bucket] += counts[bucket]
+
     def batting_payload(self) -> dict:
         batting = self.batting
         return {
@@ -202,19 +270,16 @@ class PlayerStatsAccumulator:
             "best_display": best_display,
         }
 
+    def fielding_payload(self) -> dict:
+        return fielding_block(self.fielding)
+
     def stats_payload(self) -> dict:
         return {
             "matches_played": len(self.matches),
             "innings_played": self.batting["innings"],
             "batting": self.batting_payload(),
             "bowling": self.bowling_payload(),
-            "fielding": {
-                "available": False,
-                "catches": 0,
-                "run_outs": 0,
-                "stumpings": 0,
-                "note": FIELDING_NOTE,
-            },
+            "fielding": self.fielding_payload(),
         }
 
 
@@ -292,6 +357,8 @@ async def get_player_performance(db: AsyncSession, player, user_id: int) -> dict
 __all__ = [
     "FIELDING_NOTE",
     "PlayerStatsAccumulator",
+    "fielding_block",
+    "fielding_counts",
     "get_player_performance",
     "load_player_innings",
 ]

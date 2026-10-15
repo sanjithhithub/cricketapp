@@ -337,12 +337,13 @@ def test_bowler_summary_with_best_figures(client, world):
     assert bowl["best_runs_conceded"] == 1
 
 
-def test_fielding_reported_unavailable(client, world):
+def test_fielding_without_attribution_is_zero(client, world):
     fielding = _get(client, world["a0"])["fielding"]
-    assert fielding["available"] is False
+    assert fielding["available"] is True
     assert fielding["catches"] == 0
     assert fielding["run_outs"] == 0
     assert fielding["stumpings"] == 0
+    assert fielding["total_dismissals"] == 0
     assert fielding["note"]
 
 

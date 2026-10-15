@@ -187,6 +187,10 @@ OPENAPI_TAGS: list[dict[str, Any]] = [
         "name": "visualization",
         "description": "Chart-ready data: runs by over, progression, batting/bowling charts, partnerships and team form.",
     },
+    {
+        "name": "analytics",
+        "description": "Deep analysis: partnership breakdowns and player career statistics split by season, competition, tournament and team.",
+    },
     {"name": "levels", "description": "Competition levels a team can be registered at."},
     {"name": "reference", "description": "Countries, states, cities and dial codes."},
     {"name": "health", "description": "Liveness probe."},

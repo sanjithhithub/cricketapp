@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.analytics.routes import router as analytics_router
 from app.api_docs import (
     BAD_REQUEST,
     OPENAPI_TAGS,
@@ -197,6 +198,7 @@ routers = [
     (tournaments_router, [Depends(get_current_user)]),
     (leaderboards_router, [Depends(get_current_user)]),
     (visualization_router, [Depends(get_current_user)]),
+    (analytics_router, [Depends(get_current_user)]),
 ]
 for router, deps in routers:
     app.include_router(router, prefix=API_V1_PREFIX, dependencies=deps)

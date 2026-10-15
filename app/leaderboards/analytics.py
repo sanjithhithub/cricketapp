@@ -359,7 +359,7 @@ async def build_bowling_leaderboards(
     dots_by_innings_bowler = {}
     if all_innings_ids:
         deliv_query = await db.execute(
-            select(Delivery.innings_id, Delivery.bowler_id, Delivery.runs_batsman, 
+            select(Delivery.innings_id, Delivery.bowler_id, Delivery.runs_batsman,
                    Delivery.runs_extras, Delivery.extra_type)
             .where(Delivery.innings_id.in_(all_innings_ids))
         )
@@ -518,7 +518,6 @@ async def build_fielding_leaderboards(db: AsyncSession, user_id: int, *, top: in
     stats: dict[int, dict] = {}
     # Preload all deliveries for completed matches to avoid N+1 queries
     if match_ids:
-        from sqlalchemy import or_
         # Get all innings IDs for completed matches
         innings_query = await db.execute(
             select(Innings.id, Innings.match_id, Innings.is_super_over, Innings.target, Innings.bowling_team_id)
@@ -527,11 +526,10 @@ async def build_fielding_leaderboards(db: AsyncSession, user_id: int, *, top: in
         )
         all_innings = innings_query.all()
         all_innings_ids = [i[0] for i in all_innings]
-        innings_map = {(i[0]): i for i in all_innings}
         # Batch load all deliveries
         if all_innings_ids:
             deliv_query = await db.execute(
-                select(Delivery.id, Delivery.innings_id, Delivery.wicket_type, 
+                select(Delivery.id, Delivery.innings_id, Delivery.wicket_type,
                        Delivery.fielder_id, Delivery.runs_batsman, Delivery.runs_extras)
                 .where(Delivery.innings_id.in_(all_innings_ids))
                 .order_by(Delivery.innings_id, Delivery.id)

@@ -323,9 +323,10 @@ def test_competition_totals_sum_to_career(client, world):
     assert total_matches == body["career"]["matches_played"]
 
 
-def test_profile_fielding_unavailable(client, world):
+def test_profile_fielding_zero_without_attribution(client, world):
     fielding = _get(client, world["a0"])["career"]["fielding"]
-    assert fielding["available"] is False
+    assert fielding["available"] is True
+    assert fielding["total_dismissals"] == 0
     assert fielding["note"]
 
 
