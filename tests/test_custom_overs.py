@@ -121,9 +121,7 @@ def _new_match(db, admin, team_a, team_b, total_overs):
 def world(client):
     async def setup():
         async with async_session() as db:
-            admin = (
-                await db.execute(select(User).where(User.email == EMAIL))
-            ).scalar_one_or_none()
+            admin = (await db.execute(select(User).where(User.email == EMAIL))).scalar_one_or_none()
             if admin is None:
                 admin = User(
                     email=EMAIL,
@@ -221,9 +219,7 @@ def world(client):
             # lower below what was bowled" rule.
             m_bowled = _new_match(db, admin, team_a, team_b, total_overs=8)
             await db.flush()
-            await _seed_innings(
-                db, m_bowled, team_a_ids[:2], team_b_ids[:2], overs=3
-            )
+            await _seed_innings(db, m_bowled, team_a_ids[:2], team_b_ids[:2], overs=3)
 
             # A one-over innings so a one-over match reads as complete...
             m_tiny = _new_match(db, admin, team_a, team_b, total_overs=1)
@@ -234,9 +230,7 @@ def world(client):
             # overs already bowled, for the quota check.
             m_quota = _new_match(db, admin, team_a, team_b, total_overs=5)
             await db.flush()
-            quota = await _seed_innings(
-                db, m_quota, team_a_ids[:2], team_b_ids[:2], overs=2
-            )
+            quota = await _seed_innings(db, m_quota, team_a_ids[:2], team_b_ids[:2], overs=2)
 
             await db.commit()
             return {
@@ -284,7 +278,9 @@ def test_bowler_quota_scales_with_the_custom_over_count():
     assert ScoreEngine._max_over_per_player(Match(match_type="T20", total_overs=10), normal) == 2
     assert ScoreEngine._max_over_per_player(Match(match_type="T20", total_overs=4), normal) == 1
     assert ScoreEngine._max_over_per_player(Match(match_type="T20", total_overs=None), normal) == 4
-    assert ScoreEngine._max_over_per_player(Match(match_type="Test", total_overs=None), normal) is None
+    assert (
+        ScoreEngine._max_over_per_player(Match(match_type="Test", total_overs=None), normal) is None
+    )
 
 
 def test_a_super_over_has_no_bowler_quota():
@@ -405,17 +401,20 @@ def test_an_over_count_below_the_balls_bowled_is_rejected(client, as_admin, worl
 
 def test_an_over_count_in_range_is_enforced_by_the_schema(client, as_admin, world):
     as_admin(world["admin"])
-    assert client.post(
-        "/v1/matches",
-        json={
-            "match_date": "2026-05-03",
-            "match_time": "18:00",
-            "venue": "Overs Ground",
-            "match_type": "T20",
-            "team_a_id": world["team_a"],
-            "team_b_id": world["team_b"],
-            "toss_winner_id": world["team_a"],
-            "toss_decision": "bat",
-            "total_overs": 0,
-        },
-    ).status_code == 422
+    assert (
+        client.post(
+            "/v1/matches",
+            json={
+                "match_date": "2026-05-03",
+                "match_time": "18:00",
+                "venue": "Overs Ground",
+                "match_type": "T20",
+                "team_a_id": world["team_a"],
+                "team_b_id": world["team_b"],
+                "toss_winner_id": world["team_a"],
+                "toss_decision": "bat",
+                "total_overs": 0,
+            },
+        ).status_code
+        == 422
+    )

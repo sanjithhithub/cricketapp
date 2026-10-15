@@ -30,9 +30,7 @@ class BattingLeaderboardEntry(BaseModel):
     sixes: int
     highest_score: int
     highest_score_not_out: bool
-    highest_score_display: str = Field(
-        description='The best innings, e.g. "104*" when unbeaten.'
-    )
+    highest_score_display: str = Field(description='The best innings, e.g. "104*" when unbeaten.')
     # None while the player has never been dismissed: an average of runs/0 is
     # undefined, not zero, and the average board refuses to rank one.
     average: float | None = None
@@ -42,15 +40,9 @@ class BattingLeaderboardEntry(BaseModel):
 
 class BattingLeaderboardsResponse(BaseModel):
     scope: str = "account"
-    matches_considered: int = Field(
-        description="Completed matches the boards were built from."
-    )
-    min_balls_faced: int = Field(
-        description="The strike-rate board's bottom limit on balls faced."
-    )
-    min_dismissals: int = Field(
-        description="The average board's bottom limit on dismissals."
-    )
+    matches_considered: int = Field(description="Completed matches the boards were built from.")
+    min_balls_faced: int = Field(description="The strike-rate board's bottom limit on balls faced.")
+    min_dismissals: int = Field(description="The average board's bottom limit on dismissals.")
     most_runs: list[BattingLeaderboardEntry]
     highest_strike_rate: list[BattingLeaderboardEntry]
     most_fours: list[BattingLeaderboardEntry]
@@ -90,12 +82,8 @@ class BowlingLeaderboardEntry(BaseModel):
 
 class BowlingLeaderboardsResponse(BaseModel):
     scope: str = "account"
-    matches_considered: int = Field(
-        description="Completed matches the boards were built from."
-    )
-    min_overs: float = Field(
-        description="The economy board's bottom limit on overs bowled."
-    )
+    matches_considered: int = Field(description="Completed matches the boards were built from.")
+    min_overs: float = Field(description="The economy board's bottom limit on overs bowled.")
     most_wickets: list[BowlingLeaderboardEntry]
     best_economy: list[BowlingLeaderboardEntry]
     best_bowling_figures: list[BowlingLeaderboardEntry]
@@ -118,17 +106,13 @@ class FieldingLeaderboardEntry(BaseModel):
     catches: int
     run_outs: int
     stumpings: int
-    total_dismissals: int = Field(
-        description="Catches + run outs + stumpings for this fielder."
-    )
+    total_dismissals: int = Field(description="Catches + run outs + stumpings for this fielder.")
     value: float = Field(description="The metric this board ranked the row by.")
 
 
 class FieldingLeaderboardsResponse(BaseModel):
     scope: str = "account"
-    matches_considered: int = Field(
-        description="Completed matches the boards were built from."
-    )
+    matches_considered: int = Field(description="Completed matches the boards were built from.")
     # Only dismissals the delivery log actually attributes to a fielder appear
     # here; a match scored before attribution existed contributes nothing.
     most_catches: list[FieldingLeaderboardEntry]

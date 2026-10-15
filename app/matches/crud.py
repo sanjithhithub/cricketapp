@@ -88,9 +88,7 @@ async def _validate_total_overs(db: AsyncSession, match_id: int, total_overs: in
     bowled_balls = await _max_legal_balls_bowled(db, match_id)
     if total_overs * 6 < bowled_balls:
         bowled_overs = f"{bowled_balls // 6}.{bowled_balls % 6}"
-        return (
-            f"total_overs cannot be lower than the overs already bowled ({bowled_overs})"
-        )
+        return f"total_overs cannot be lower than the overs already bowled ({bowled_overs})"
     return None
 
 

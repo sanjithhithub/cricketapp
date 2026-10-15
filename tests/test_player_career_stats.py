@@ -99,9 +99,7 @@ def _new_match(db, admin, team_a, team_b, match_date, venue="Career Ground"):
 def world(client):
     async def setup():
         async with async_session() as db:
-            admin = (
-                await db.execute(select(User).where(User.email == EMAIL))
-            ).scalar_one_or_none()
+            admin = (await db.execute(select(User).where(User.email == EMAIL))).scalar_one_or_none()
             if admin is None:
                 admin = User(
                     email=EMAIL,

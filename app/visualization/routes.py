@@ -77,7 +77,9 @@ async def runs_by_over_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """Runs scored in each over of every innings of a match."""
-    return await get_runs_by_over(db, await _owned_match(match_id, current_user, db), innings_number)
+    return await get_runs_by_over(
+        db, await _owned_match(match_id, current_user, db), innings_number
+    )
 
 
 @router.get(
@@ -224,7 +226,9 @@ async def win_loss_trend_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     """A team's cumulative win/loss/draw record through its completed matches."""
-    return await get_win_loss_trend(db, await _owned_team(team_id, current_user, db), current_user.id)
+    return await get_win_loss_trend(
+        db, await _owned_team(team_id, current_user, db), current_user.id
+    )
 
 
 @router.get(

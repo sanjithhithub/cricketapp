@@ -92,9 +92,7 @@ async def _match_innings(db: AsyncSession, match_id: int) -> list[Innings]:
     return list(result.scalars().all())
 
 
-async def _scorecards(
-    engine: ScoreEngine, innings_list: list[Innings]
-) -> dict[int, object]:
+async def _scorecards(engine: ScoreEngine, innings_list: list[Innings]) -> dict[int, object]:
     cards: dict[int, object] = {}
     for innings in innings_list:
         try:
@@ -359,9 +357,13 @@ async def build_bowling_leaderboards(
     dots_by_innings_bowler = {}
     if all_innings_ids:
         deliv_query = await db.execute(
-            select(Delivery.innings_id, Delivery.bowler_id, Delivery.runs_batsman,
-                   Delivery.runs_extras, Delivery.extra_type)
-            .where(Delivery.innings_id.in_(all_innings_ids))
+            select(
+                Delivery.innings_id,
+                Delivery.bowler_id,
+                Delivery.runs_batsman,
+                Delivery.runs_extras,
+                Delivery.extra_type,
+            ).where(Delivery.innings_id.in_(all_innings_ids))
         )
         for inn_id, bowler_id, runs_b, runs_e, ext in deliv_query.all():
             key = (inn_id, bowler_id)
@@ -376,7 +378,7 @@ async def build_bowling_leaderboards(
         if is_super_over:
             continue
         card = await engine.get_scorecard(innings_id)
-        if not card or not hasattr(card, 'bowlers'):
+        if not card or not hasattr(card, "bowlers"):
             continue
         for c in card.bowlers:
             acc = stats.setdefault(c.player_id, _new_bowler_accumulator(c))
@@ -520,7 +522,13 @@ async def build_fielding_leaderboards(db: AsyncSession, user_id: int, *, top: in
     if match_ids:
         # Get all innings IDs for completed matches
         innings_query = await db.execute(
-            select(Innings.id, Innings.match_id, Innings.is_super_over, Innings.target, Innings.bowling_team_id)
+            select(
+                Innings.id,
+                Innings.match_id,
+                Innings.is_super_over,
+                Innings.target,
+                Innings.bowling_team_id,
+            )
             .where(Innings.match_id.in_(match_ids))
             .order_by(Innings.id)
         )
@@ -529,8 +537,14 @@ async def build_fielding_leaderboards(db: AsyncSession, user_id: int, *, top: in
         # Batch load all deliveries
         if all_innings_ids:
             deliv_query = await db.execute(
-                select(Delivery.id, Delivery.innings_id, Delivery.wicket_type,
-                       Delivery.fielder_id, Delivery.runs_batsman, Delivery.runs_extras)
+                select(
+                    Delivery.id,
+                    Delivery.innings_id,
+                    Delivery.wicket_type,
+                    Delivery.fielder_id,
+                    Delivery.runs_batsman,
+                    Delivery.runs_extras,
+                )
                 .where(Delivery.innings_id.in_(all_innings_ids))
                 .order_by(Delivery.innings_id, Delivery.id)
             )

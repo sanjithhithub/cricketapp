@@ -91,9 +91,7 @@ def _events_deliveries(order_ids: list[int], bowler_id: int, events: list[tuple[
     return deliveries
 
 
-async def _seed_innings(
-    db, match, innings_number, batting_order, bowler_id, events, target=None
-):
+async def _seed_innings(db, match, innings_number, batting_order, bowler_id, events, target=None):
     innings = Innings(
         match_id=match.id,
         batting_team_id=match.team_a_id if innings_number % 2 == 1 else match.team_b_id,
@@ -243,9 +241,7 @@ def world(client):
                     (2, False),
                 ],
             )
-            await _seed_innings(
-                db, m1, 2, B, A[0], [(6, False)] * 6, target=45
-            )
+            await _seed_innings(db, m1, 2, B, A[0], [(6, False)] * 6, target=45)
             await set_match_completed(db, m1)
 
             # M2: Team C 13 vs Team D 10. C0: 0 off 1, out (avg 0);
@@ -267,9 +263,7 @@ def world(client):
                     (2, False),
                 ],
             )
-            await _seed_innings(
-                db, m2, 2, D, C[0], [(4, False), (0, True), (6, False)], target=14
-            )
+            await _seed_innings(db, m2, 2, D, C[0], [(4, False), (0, True), (6, False)], target=14)
             await set_match_completed(db, m2)
 
             # M3: Team A 120 vs Team D 36. A0 and A1 each face 30 balls for 60
@@ -345,9 +339,9 @@ def test_strike_rate_qualifier_excludes_small_samples(client, as_admin, world):
     assert names == [p["A0"], p["A1"]]
     assert [r["value"] for r in default] == [231.58, 223.53]
 
-    unqualified = client.get(
-        "/v1/leaderboards/batting", params={"min_balls_faced": 0}
-    ).json()["highest_strike_rate"]
+    unqualified = client.get("/v1/leaderboards/batting", params={"min_balls_faced": 0}).json()[
+        "highest_strike_rate"
+    ]
     assert unqualified[0]["player_id"] == p["B0"]
     assert unqualified[0]["value"] == 600.0
 
@@ -359,9 +353,9 @@ def test_batting_average_qualifier(client, as_admin, world):
     default = client.get("/v1/leaderboards/batting").json()["best_batting_average"]
     assert default == []
 
-    relaxed = client.get(
-        "/v1/leaderboards/batting", params={"min_dismissals": 1}
-    ).json()["best_batting_average"]
+    relaxed = client.get("/v1/leaderboards/batting", params={"min_dismissals": 1}).json()[
+        "best_batting_average"
+    ]
     assert [r["player_id"] for r in relaxed] == [p["D0"], p["C0"]]
     assert [r["value"] for r in relaxed] == [40.0, 0.0]
 
@@ -419,8 +413,6 @@ def test_bowling_economy_qualifier(client, as_admin, world):
     assert [r["player_id"] for r in default] == [p["D0"]]
     assert default[0]["value"] == 12.09
 
-    relaxed = client.get(
-        "/v1/leaderboards/bowling", params={"min_overs": 0}
-    ).json()["best_economy"]
+    relaxed = client.get("/v1/leaderboards/bowling", params={"min_overs": 0}).json()["best_economy"]
     assert [r["player_id"] for r in relaxed] == [p["D0"], p["C0"], p["B0"], p["A0"]]
     assert [r["value"] for r in relaxed] == [12.09, 20.0, 22.0, 36.0]

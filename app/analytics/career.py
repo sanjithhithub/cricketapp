@@ -41,7 +41,9 @@ UNKNOWN_LEVEL_NAME = "Unknown competition"
 NO_TOURNAMENT_NAME = "No tournament"
 
 
-async def _team_meta(db: AsyncSession, team_ids) -> dict[int, tuple[int, str, str | None, str | None]]:
+async def _team_meta(
+    db: AsyncSession, team_ids
+) -> dict[int, tuple[int, str, str | None, str | None]]:
     """Map team id -> (level_id, level_name, team_name, team_short_name)."""
     ids = {t for t in team_ids if t is not None}
     if not ids:
@@ -115,9 +117,7 @@ async def get_player_career_stats(
     recent: int = 10,
 ) -> dict:
     """Build the career-statistics payload for ``player``."""
-    innings_list = await load_player_innings(
-        db, player.id, user_id, completed_only=completed_only
-    )
+    innings_list = await load_player_innings(db, player.id, user_id, completed_only=completed_only)
     repo = ScoringRepository(db)
     engine = ScoreEngine(repo)
 
@@ -212,13 +212,21 @@ async def get_player_career_stats(
             for season, stats in sorted(by_season.items(), key=lambda item: item[0], reverse=True)
         ],
         "by_competition": [
-            {"level_id": level_id, "level_name": competition_names[level_id], **stats.stats_payload()}
+            {
+                "level_id": level_id,
+                "level_name": competition_names[level_id],
+                **stats.stats_payload(),
+            }
             for level_id, stats in sorted(
                 by_competition.items(), key=lambda item: competition_names[item[0]].lower()
             )
         ],
         "by_tournament": [
-            {"tournament_id": key, "tournament_name": tournament_names[key], **stats.stats_payload()}
+            {
+                "tournament_id": key,
+                "tournament_name": tournament_names[key],
+                **stats.stats_payload(),
+            }
             for key, stats in sorted(
                 by_tournament.items(), key=lambda item: tournament_names[item[0]].lower()
             )
@@ -231,7 +239,8 @@ async def get_player_career_stats(
                 **stats.stats_payload(),
             }
             for team_id, stats in sorted(
-                by_team.items(), key=lambda item: (team_names.get(item[0], (None, None))[0] or "").lower()
+                by_team.items(),
+                key=lambda item: (team_names.get(item[0], (None, None))[0] or "").lower(),
             )
         ],
         "recent_form": recent_form,

@@ -44,9 +44,7 @@ def as_admin():
     app.dependency_overrides.pop(get_current_user, None)
 
 
-def _events_deliveries(
-    order_ids: list[int], bowler_id: int, events: list[tuple[int, str | None]]
-):
+def _events_deliveries(order_ids: list[int], bowler_id: int, events: list[tuple[int, str | None]]):
     striker_i, non_striker_i = 0, 1
     next_pos = 2
     balls_in_over = 0
@@ -279,11 +277,12 @@ def test_runs_by_over(client, as_admin, world):
 
 def test_innings_progression(client, as_admin, world):
     _use_admin(as_admin, world)
-    body = client.get(
-        f"/v1/matches/{world['match_id']}/visualizations/innings-progression"
-    ).json()
+    body = client.get(f"/v1/matches/{world['match_id']}/visualizations/innings-progression").json()
     inn1 = body["innings"][0]
-    assert [(p["over_number"], p["cumulative_runs"], p["cumulative_wickets"]) for p in inn1["progression"]] == [
+    assert [
+        (p["over_number"], p["cumulative_runs"], p["cumulative_wickets"])
+        for p in inn1["progression"]
+    ] == [
         (1, 16, 0),
         (2, 29, 1),
     ]
@@ -304,9 +303,9 @@ def test_player_runs_and_strike_rates(client, as_admin, world):
     ]
     assert rows[0]["strike_rate"] == 600.0
 
-    sr = client.get(
-        f"/v1/matches/{world['match_id']}/visualizations/player-strike-rate"
-    ).json()["players"]
+    sr = client.get(f"/v1/matches/{world['match_id']}/visualizations/player-strike-rate").json()[
+        "players"
+    ]
     assert [r["player_id"] for r in sr] == [p["Y"][0], p["X"][2], p["X"][0], p["X"][1]]
     assert [r["strike_rate"] for r in sr] == [600.0, 350.0, 220.0, 220.0]
 
@@ -319,18 +318,16 @@ def test_bowler_charts(client, as_admin, world):
     ]
     assert [(r["player_id"], r["economy"]) for r in eco] == [(p["Y"][0], 14.5), (p["X"][0], 36.0)]
 
-    wkts = client.get(
-        f"/v1/matches/{world['match_id']}/visualizations/wickets-by-bowler"
-    ).json()["bowlers"]
+    wkts = client.get(f"/v1/matches/{world['match_id']}/visualizations/wickets-by-bowler").json()[
+        "bowlers"
+    ]
     assert [(r["player_id"], r["wickets"]) for r in wkts] == [(p["Y"][0], 1), (p["X"][0], 0)]
     assert wkts[0]["overs_str"] == "2.0"
 
 
 def test_run_distribution(client, as_admin, world):
     _use_admin(as_admin, world)
-    body = client.get(
-        f"/v1/matches/{world['match_id']}/visualizations/run-distribution"
-    ).json()
+    body = client.get(f"/v1/matches/{world['match_id']}/visualizations/run-distribution").json()
     totals = body["match_totals"]
     assert totals["dot_balls"] == 1
     assert totals["ones"] == 3
@@ -367,9 +364,7 @@ def test_partnerships(client, as_admin, world):
 
 def test_team_win_loss_trend_and_recent_form(client, as_admin, world):
     _use_admin(as_admin, world)
-    trend = client.get(
-        f"/v1/teams/{world['x_team'].id}/visualizations/win-loss-trend"
-    ).json()
+    trend = client.get(f"/v1/teams/{world['x_team'].id}/visualizations/win-loss-trend").json()
     assert trend["team_name"] == "Team X"
     assert trend["matches_played"] == 1
     assert (trend["wins"], trend["losses"], trend["draws"]) == (0, 1, 0)

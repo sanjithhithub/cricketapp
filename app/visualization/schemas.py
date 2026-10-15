@@ -214,5 +214,5 @@ class RecentFormResponse(BaseModel):
     short_name: str
     recent_form: list[TeamFormPoint]
     recent_form_string: str = Field(
-        description="One letter per result, newest first, e.g. \"WWLDW\"."
+        description='One letter per result, newest first, e.g. "WWLDW".'
     )

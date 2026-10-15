@@ -83,8 +83,10 @@ async def _load_innings(
     # Batch load deliveries for all innings
     if innings_list:
         from app.scoring.models import Delivery
+
         deliv_query = await db.execute(
-            select(Delivery).where(Delivery.innings_id.in_([i.id for i in innings_list]))
+            select(Delivery)
+            .where(Delivery.innings_id.in_([i.id for i in innings_list]))
             .order_by(Delivery.innings_id, Delivery.id)
         )
         all_deliveries = deliv_query.scalars().all()
@@ -164,7 +166,9 @@ def _aggregate_batting(entries: list[_InningsData]) -> list[dict]:
             acc["fours"] += b.fours
             acc["sixes"] += b.sixes
             if b.runs > acc["highest_score"] or (
-                b.runs == acc["highest_score"] and not b.out and acc["highest_score_not_out"] is False
+                b.runs == acc["highest_score"]
+                and not b.out
+                and acc["highest_score_not_out"] is False
             ):
                 acc["highest_score"] = b.runs
                 acc["highest_score_not_out"] = not b.out
@@ -278,7 +282,9 @@ async def get_innings_progression(
     return {"match_id": match.id, "innings": innings}
 
 
-async def get_player_runs(db: AsyncSession, match: Match, innings_number: int | None = None) -> dict:
+async def get_player_runs(
+    db: AsyncSession, match: Match, innings_number: int | None = None
+) -> dict:
     """Aggregated batting figures for the match, ranked by runs."""
     rows = _aggregate_batting(await _load_innings(db, match, innings_number))
     rows.sort(key=lambda r: (-r["runs"], -r["strike_rate"], r["balls_faced"], r["player_id"]))
@@ -467,9 +473,7 @@ async def get_partnerships(
 # --- Team-wide charts ------------------------------------------------------
 
 
-async def _team_matches_chronological(
-    db: AsyncSession, team_id: int, user_id: int
-) -> list[Match]:
+async def _team_matches_chronological(db: AsyncSession, team_id: int, user_id: int) -> list[Match]:
     result = await db.execute(
         select(Match)
         .where(
@@ -572,9 +576,7 @@ async def get_win_loss_trend(db: AsyncSession, team: Team, user_id: int) -> dict
     }
 
 
-async def get_recent_form(
-    db: AsyncSession, team: Team, user_id: int, recent: int = 5
-) -> dict:
+async def get_recent_form(db: AsyncSession, team: Team, user_id: int, recent: int = 5) -> dict:
     """The team's most recent completed results, newest first."""
     matches = await _team_matches_chronological(db, team.id, user_id)
     matches.reverse()
