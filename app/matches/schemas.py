@@ -24,6 +24,18 @@ class MatchBase(BaseModel):
     # Player of the match on the completed-match summary. Never derived, may be
     # set to a player from either side, and optional until a match is done.
     player_of_match_id: int | None = None
+    # Overs per innings, overriding the format default (T20 20, ODI 50, Test
+    # unlimited). Omit or send null to keep the format default; set it for a
+    # junior or reduced-overs game. Editable while the match is live.
+    total_overs: int | None = Field(
+        None,
+        ge=1,
+        le=200,
+        description=(
+            "Overs per innings. Null/omitted uses the format default "
+            "(T20 20, ODI 50, Test unlimited)."
+        ),
+    )
     # A level main match goes to a one-over-per-side Super Over instead of
     # a tied result. super_over_repeat keeps playing extra Super Overs (batting
     # order swapped each time) when the Super Over is itself level.
@@ -58,6 +70,14 @@ class MatchUpdate(BaseModel):
     referee_1_name: str | None = Field(None, max_length=100)
     referee_2_name: str | None = Field(None, max_length=100)
     match_referee_name: str | None = Field(None, max_length=100)
+    # Set to raise or lower the over count mid-match, or to null to fall back to
+    # the format default. A value below the overs already bowled is refused.
+    total_overs: int | None = Field(
+        None,
+        ge=1,
+        le=200,
+        description="Overs per innings; null falls back to the format default.",
+    )
     super_over_enabled: bool | None = None
     super_over_repeat: bool | None = None
     player_of_match_id: int | None = None

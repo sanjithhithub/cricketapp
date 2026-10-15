@@ -22,15 +22,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.matches.models import Match
 from app.scoring.crud import ScoringRepository
-from app.scoring.enums import ExtraType, MatchFormat
+from app.scoring.engine import max_overs_for
+from app.scoring.enums import ExtraType
 from app.scoring.models import Innings
 
 _ILLEGAL_BALL_EXTRAS = (ExtraType.WIDE.value, ExtraType.NO_BALL.value)
-_MAX_OVERS_BY_FORMAT = {
-    MatchFormat.T20.value: 20,
-    MatchFormat.ODI.value: 50,
-    MatchFormat.TEST.value: None,
-}
 
 
 def _extra(delivery) -> str:
@@ -301,12 +297,9 @@ def build_innings_analytics(
 
 
 def _max_overs_for(match: Match, innings) -> int | None:
-    if innings.is_super_over:
-        return 1
-    try:
-        return _MAX_OVERS_BY_FORMAT.get(MatchFormat(str(match.match_type).upper()).value)
-    except ValueError:
-        return None
+    # Delegates to the engine so the analytics over limit can never drift from
+    # the scorecard's: both honour the match's custom total_overs.
+    return max_overs_for(match, innings)
 
 
 async def _list_innings(

@@ -40,6 +40,13 @@ class Match(Base):
     current_innings_number: Mapped[int] = mapped_column(Integer, default=0)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
 
+    # Overs per innings, overriding the format default (T20 20, ODI 50, Test
+    # unlimited). A junior game may be 8 overs a side, a rain-shortened one 15.
+    # NULL means "use the format default", so existing matches and Test cricket
+    # are unaffected. Editable while a match is live; the bowler quota and the
+    # innings-end rule both read this value.
+    total_overs: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Super Over: when the main (2-innings) match finishes level, play a
     # one-over-per-side decider instead of declaring the match tied.
     super_over_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

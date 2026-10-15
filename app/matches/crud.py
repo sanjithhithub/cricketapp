@@ -5,7 +5,8 @@ from sqlalchemy.orm import selectinload
 from app.matches.models import Match
 from app.matches.schemas import MatchCreate, MatchUpdate
 from app.scoring.crud import sync_match_result
-from app.scoring.enums import MatchStatus
+from app.scoring.enums import ExtraType, MatchStatus
+from app.scoring.models import Delivery, Innings
 from app.teams.models import PlayerTeamAssignment, Team
 
 
@@ -51,6 +52,45 @@ async def _validate_player_of_match(
     )
     if result.scalar_one_or_none() is None:
         return "Player of the match must be a player in Team A or Team B"
+    return None
+
+
+async def _max_legal_balls_bowled(db: AsyncSession, match_id: int) -> int:
+    """The most legal balls any non-Super-Over innings of this match has bowled.
+
+    A Super Over is one over by rule and never constrains the innings over count,
+    so it is excluded. Wides and no-balls are not balls of the over, so they do
+    not count either - the number returned is the overs the innings has actually
+    delivered.
+    """
+    result = await db.execute(
+        select(Delivery.innings_id, Delivery.extra_type)
+        .join(Innings, Innings.id == Delivery.innings_id)
+        .where(Innings.match_id == match_id, Innings.is_super_over.is_(False))
+    )
+    counts: dict[int, int] = {}
+    for innings_id, extra in result.all():
+        if extra not in (ExtraType.WIDE.value, ExtraType.NO_BALL.value):
+            counts[innings_id] = counts.get(innings_id, 0) + 1
+    return max(counts.values(), default=0)
+
+
+async def _validate_total_overs(db: AsyncSession, match_id: int, total_overs: int | None):
+    """Refuse an over count lower than cricket already played.
+
+    Reducing the overs is allowed, but not below what an innings has bowled: the
+    scorecard would then claim the side faced more overs than the match permitted.
+    Raising the count, or clearing it back to the format default (``None``), is
+    always allowed.
+    """
+    if total_overs is None:
+        return None
+    bowled_balls = await _max_legal_balls_bowled(db, match_id)
+    if total_overs * 6 < bowled_balls:
+        bowled_overs = f"{bowled_balls // 6}.{bowled_balls % 6}"
+        return (
+            f"total_overs cannot be lower than the overs already bowled ({bowled_overs})"
+        )
     return None
 
 
@@ -150,6 +190,11 @@ async def update_match(db: AsyncSession, match_id: int, data: MatchUpdate, user_
         if error:
             return None, error
 
+    if "total_overs" in update_data:
+        error = await _validate_total_overs(db, match.id, update_data["total_overs"])
+        if error:
+            return None, error
+
     for key, val in update_data.items():
         setattr(match, key, val)
 
@@ -175,6 +220,10 @@ async def replace_match(db: AsyncSession, match_id: int, data: MatchCreate, user
     ]
     if errors:
         return None, "; ".join(errors)
+
+    error = await _validate_total_overs(db, match.id, data.total_overs)
+    if error:
+        return None, error
 
     for key, val in data.model_dump().items():
         setattr(match, key, val)

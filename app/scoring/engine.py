@@ -9,6 +9,28 @@ _MAX_OVERS_BY_FORMAT = {
     MatchFormat.TEST: None,
 }
 
+
+def max_overs_for(match, innings=None) -> int | None:
+    """The over limit for an innings.
+
+    A Super Over is always one over. Otherwise the match's own ``total_overs``
+    wins when set - that is the customisable value a junior or reduced-overs game
+    needs - and only when it is NULL does the format default apply (T20 20, ODI
+    50, Test unlimited). Reading the limit through one helper keeps the scorecard,
+    the per-bowler quota and the innings-end rule in agreement, so a change to the
+    over count moves all three together.
+    """
+    if innings is not None and innings.is_super_over:
+        return 1
+    total = getattr(match, "total_overs", None)
+    if total is not None:
+        return total
+    try:
+        return _MAX_OVERS_BY_FORMAT.get(MatchFormat(str(match.match_type).upper()))
+    except ValueError:
+        return None
+
+
 # Wides and no-balls are the only deliveries that do not count as a ball of
 # the over. Everything else (normal runs, byes, leg byes) is a legal ball.
 _ILLEGAL_BALL_EXTRAS = (ExtraType.WIDE, ExtraType.NO_BALL)
@@ -305,10 +327,7 @@ class ScoreEngine:
         deliveries = await self.repo.list_deliveries(innings_id)
         order = await self.repo.list_batting_order(innings_id)
 
-        try:
-            max_overs = _MAX_OVERS_BY_FORMAT.get(MatchFormat(str(match.match_type).upper()))
-        except ValueError:
-            max_overs = None
+        max_overs = max_overs_for(match, innings)
 
         if len(order) < 2:
             return ScorecardDTO(
@@ -654,12 +673,11 @@ class ScoreEngine:
             # here: wides / no-balls do not count as legal balls, so a single
             # bowler keeps bowling until 6 legal balls land or the target is hit.
             return None
-        try:
-            innings_overs = _MAX_OVERS_BY_FORMAT.get(MatchFormat(str(match.match_type).upper()))
-        except ValueError:
-            innings_overs = None
+        innings_overs = max_overs_for(match, innings)
         if innings_overs is None:
             return None
+        # The standard quota is one fifth of the innings (T20 4, ODI 10). Custom
+        # over counts scale the same way, rounded, and never below one over.
         return max(1, round(innings_overs / 5))
 
     def _replay(
@@ -845,11 +863,7 @@ class ScoreEngine:
             if state.current_over - 1 >= 1 and state.balls_in_over == 0:
                 return "overs_complete"
             return None
-        try:
-            match_format = MatchFormat(str(match.match_type).upper())
-        except ValueError:
-            match_format = None
-        max_overs = _MAX_OVERS_BY_FORMAT.get(match_format) if match_format else None
+        max_overs = max_overs_for(match, innings)
         if (
             max_overs is not None
             and state.current_over - 1 >= max_overs
