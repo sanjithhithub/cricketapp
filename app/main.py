@@ -204,8 +204,21 @@ for router, deps in routers:
     app.include_router(router, prefix=API_V1_PREFIX, dependencies=deps)
     app.include_router(router, prefix=API_ALIAS_PREFIX, dependencies=deps)
 
-UPLOADS_DIR = "uploads"
+# Where the local storage backend writes and where pre-migration files live.
+# storage.py reads the same UPLOADS_DIR default, so the two agree on one path.
+UPLOADS_DIR = os.getenv("UPLOADS_DIR", "uploads")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
+
+# Extension -> media type, used both for pre-migration files on disk and for
+# bytes streamed back from S3. The key's extension is authoritative because the
+# old static layout never stored a content type.
+_IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
 
 # Installed after the routers so the dependency graph it walks is complete. Until
 # this runs, the document declares no failures at all - see app/api_docs.py.
@@ -264,8 +277,9 @@ async def serve_upload(key: str):
     if os.path.isfile(legacy) and os.path.abspath(legacy).startswith(
         os.path.abspath(UPLOADS_DIR) + os.sep
     ):
+        legacy_type = _IMAGE_MEDIA_TYPES.get(os.path.splitext(normalized)[1].lower(), "image/png")
         with open(legacy, "rb") as handle:
-            return Response(content=handle.read(), media_type="image/png")
+            return Response(content=handle.read(), media_type=legacy_type)
 
     # New records store the bare S3 key, e.g. "teams/16.png".
     bucket_key = normalized
@@ -283,13 +297,7 @@ async def serve_upload(key: str):
         raise HTTPException(404, "Not found")
 
     suffix = os.path.splitext(bucket_key)[1].lower()
-    media_type = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-    }.get(suffix)
+    media_type = _IMAGE_MEDIA_TYPES.get(suffix)
 
     if media_type is None:
         raise HTTPException(415, "Unsupported media type")

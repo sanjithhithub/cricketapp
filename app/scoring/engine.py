@@ -1,7 +1,13 @@
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from app.players.identity import full_name
 from app.scoring.enums import ExtraType, MatchFormat, WicketType
+from app.scoring.partnerships import (
+    BatterContribution,
+    Partnership,
+    current_partnership,
+)
 
 _MAX_OVERS_BY_FORMAT = {
     MatchFormat.T20: 20,
@@ -164,6 +170,33 @@ class BowlerCard:
 
 
 @dataclass
+class PartnershipBatterDTO:
+    """One batsman's share of the current stand, resolved for the client."""
+
+    player_id: int
+    name: str
+    runs: int
+    balls: int
+    contribution_percentage: float
+
+
+@dataclass
+class PartnershipDTO:
+    """The stand at the crease, in the shape a live scoreboard shows it.
+
+    ``total_runs`` counts the team's runs while the pair were together (extras
+    included), so it can exceed the two batsmen's own runs. A stand with no legal
+    ball yet reports a 0.0 run rate rather than dividing by zero.
+    """
+
+    batter1: PartnershipBatterDTO
+    batter2: PartnershipBatterDTO
+    total_runs: int
+    total_balls: int
+    run_rate: float
+
+
+@dataclass
 class ScorecardDTO:
     innings_id: int
     match_id: int
@@ -195,6 +228,9 @@ class ScorecardDTO:
     non_striker_id: int | None = None
     batsmen: list[BatsmanCard] = field(default_factory=list)
     bowlers: list[BowlerCard] = field(default_factory=list)
+    # The stand at the crease right now. None until two batsmen are together
+    # (before the innings starts, or between a wicket and the incoming pick).
+    partnership: PartnershipDTO | None = None
 
 
 class ScoreRepository(Protocol):
@@ -470,10 +506,31 @@ class ScoreEngine:
             if wicket and not winning_ball and wicket not in _WICKETS_OFF_EXTRA:
                 bl["wickets"] += 1
 
+        # The stand at the crease right now. Derived from the same delivery log
+        # the scorecard is built from (see app.scoring.partnerships). Before the
+        # first ball there is no delivery to replay, so the opening pair the
+        # replay put on strike is used with a zeroed stand.
+        stand = current_partnership(deliveries, innings.target)
+        if (
+            stand is None
+            and not deliveries
+            and state.striker is not None
+            and state.non_striker is not None
+        ):
+            stand = Partnership(
+                batter1=BatterContribution(state.striker),
+                batter2=BatterContribution(state.non_striker),
+            )
+        partnership_player_ids = (
+            [stand.batter1.player_id, stand.batter2.player_id] if stand is not None else []
+        )
+
         # Names and codes for everyone on the card. A missing id resolves to
         # blanks rather than failing the scorecard: a deleted player should not
         # take a match's figures down with it.
-        identities = await self.repo.player_identities(list(bat_stats) + list(bowler_stats))
+        identities = await self.repo.player_identities(
+            list(bat_stats) + list(bowler_stats) + partnership_player_ids
+        )
 
         batsmen = [
             BatsmanCard(
@@ -565,6 +622,35 @@ class ScoreEngine:
             batsmen=batsmen,
             bowlers=bowlers,
             fall_of_wickets=fall_of_wickets,
+            partnership=self._partnership_dto(stand, identities),
+        )
+
+    @staticmethod
+    def _partnership_dto(stand: Partnership | None, identities) -> PartnershipDTO | None:
+        """Resolve the id-based stand into the name-carrying DTO the client gets.
+
+        Names are looked up here because two players may share one; the id is
+        what identifies a batsman, the name is what makes the payload readable.
+        """
+        if stand is None:
+            return None
+
+        def card(batter: BatterContribution) -> PartnershipBatterDTO:
+            first, last, _code = identities.get(batter.player_id, (None, None, None))
+            return PartnershipBatterDTO(
+                player_id=batter.player_id,
+                name=full_name(first, last) or f"Player {batter.player_id}",
+                runs=batter.runs,
+                balls=batter.balls,
+                contribution_percentage=stand.contribution_of(batter.player_id),
+            )
+
+        return PartnershipDTO(
+            batter1=card(stand.batter1),
+            batter2=card(stand.batter2),
+            total_runs=stand.total_runs,
+            total_balls=stand.total_balls,
+            run_rate=stand.run_rate,
         )
 
     def _validate_input(
@@ -712,18 +798,55 @@ class ScoreEngine:
                 # chose who came in: the crease recorded on THIS delivery is that
                 # choice, so it resolves the vacancy. Replay reads the answer off
                 # the log instead of re-deriving it from the batting order.
+                #
+                # The recorded pair is adopted wholesale here rather than only
+                # filling the vacant slot. A log written before the current
+                # end-change rules may place the surviving batsman at the
+                # opposite end to the engine's expectation, and refusing it would
+                # make every match recorded back then unreplayable. The recorded
+                # crease is also where runs and dismissals are actually
+                # attributed, so it is the authority for who faced the ball.
                 vacant = self._vacant_slot(state)
-                if vacant is None or not state.awaiting_batsman:
+                survivor = state.striker if state.striker is not None else state.non_striker
+                incoming = d.non_striker_id if d.striker_id == survivor else d.striker_id
+                if (
+                    vacant is not None
+                    and state.awaiting_batsman
+                    and d.striker_id is not None
+                    and d.non_striker_id is not None
+                    and d.striker_id != d.non_striker_id
+                    and survivor in (d.striker_id, d.non_striker_id)
+                    and incoming not in state.dismissed
+                ):
+                    state.striker, state.non_striker = d.striker_id, d.non_striker_id
+                    state.awaiting_batsman = False
+                elif (
+                    d.striker_id == state.non_striker
+                    and d.non_striker_id == state.striker
+                    and state.awaiting_batsman is False
+                ):
+                    # The log names exactly the two batsmen already at the crease,
+                    # but reversed: a pre-rule-change log whose end-change
+                    # disagreed with the engine's. Trust the recorded crease.
+                    state.striker, state.non_striker = d.striker_id, d.non_striker_id
+                elif (
+                    state.awaiting_batsman is False
+                    and d.striker_id is not None
+                    and d.non_striker_id is not None
+                    and d.striker_id != d.non_striker_id
+                    and (state.striker in state.dismissed or state.non_striker in state.dismissed)
+                ):
+                    # An innings the engine treats as finished (a Super Over that
+                    # has lost its 2nd wicket, or an all-out side) skips vacating
+                    # the dismissed slot, so the dismissed batsman is still shown
+                    # at the crease. A legacy log that kept batting anyway names
+                    # the real crease on the next ball; trust it. Live scoring is
+                    # unchanged - only replay accepts these extra deliveries.
+                    state.striker, state.non_striker = d.striker_id, d.non_striker_id
+                else:
                     raise InvalidBatsmanError(
                         f"delivery lists striker {d.striker_id} / non-striker {d.non_striker_id} "
                         f"but previous state has {state.striker} / {state.non_striker}"
-                    )
-                setattr(state, vacant, d.striker_id if vacant == "striker" else d.non_striker_id)
-                state.awaiting_batsman = False
-                if d.striker_id != state.striker or d.non_striker_id != state.non_striker:
-                    raise InvalidBatsmanError(
-                        f"delivery lists striker {d.striker_id} / non-striker {d.non_striker_id} "
-                        f"but the other end is {state.striker} / {state.non_striker}"
                     )
 
             state.total += d.runs_batsman + d.runs_extras

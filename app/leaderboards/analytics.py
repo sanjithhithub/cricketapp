@@ -83,25 +83,6 @@ async def _completed_match_ids(db: AsyncSession, user_id: int) -> list[int]:
     return list(result.scalars().all())
 
 
-async def _match_innings(db: AsyncSession, match_id: int) -> list[Innings]:
-    result = await db.execute(
-        select(Innings)
-        .where(Innings.match_id == match_id)
-        .order_by(Innings.innings_number, Innings.id)
-    )
-    return list(result.scalars().all())
-
-
-async def _scorecards(engine: ScoreEngine, innings_list: list[Innings]) -> dict[int, object]:
-    cards: dict[int, object] = {}
-    for innings in innings_list:
-        try:
-            cards[innings.id] = await engine.get_scorecard(innings.id)
-        except ScoreEngineError:
-            cards[innings.id] = None
-    return cards
-
-
 def _player_name(first: str | None, last: str | None, player_id: int) -> str:
     return full_name(first, last) or f"Player {player_id}"
 
@@ -159,7 +140,13 @@ async def build_batting_leaderboards(
         innings_id, match_id, is_super_over, batting_team_id = innings_data
         if is_super_over:
             continue
-        card = await engine.get_scorecard(innings_id)
+        # A log that no longer replays - for example one recorded before the
+        # current end-change rules - must not take the whole account's boards
+        # down. Skip it exactly as the team, player and tournament aggregates do.
+        try:
+            card = await engine.get_scorecard(innings_id)
+        except ScoreEngineError:
+            continue
         if card is None:
             continue
         for b in card.batsmen:
@@ -377,7 +364,12 @@ async def build_bowling_leaderboards(
         innings_id, match_id, is_super_over, bowling_team_id = innings_data
         if is_super_over:
             continue
-        card = await engine.get_scorecard(innings_id)
+        # See build_batting_leaderboards: an unreplayable log is skipped rather
+        # than allowed to fail the account-wide bowling boards.
+        try:
+            card = await engine.get_scorecard(innings_id)
+        except ScoreEngineError:
+            continue
         if not card or not hasattr(card, "bowlers"):
             continue
         for c in card.bowlers:

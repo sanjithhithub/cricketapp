@@ -512,8 +512,13 @@ async def delete_player_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     deleted = await delete_player(db, player_id, current_user.id)
-    if not deleted:
+    if deleted is None:
         raise HTTPException(404, "Player not found")
+    if deleted is False:
+        raise HTTPException(
+            409,
+            "Player has appeared in a match and cannot be deleted without corrupting its scorecard.",
+        )
 
 
 @router.post(

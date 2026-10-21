@@ -26,6 +26,15 @@ load_dotenv()
 logger = logging.getLogger("app.auth")
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+# How far this machine's clock may differ from Google's before an ID token is
+# rejected as "issued in the future". Google stamps `iat` with its own clock, so
+# a machine whose clock has drifted (or was never synced) otherwise refuses
+# every perfectly valid token and sign-in fails with "Invalid Google ID token".
+# 60s is the conventional allowance. It does not weaken the checks that matter:
+# the signature is still verified against Google's certificates and the audience
+# still has to match GOOGLE_CLIENT_ID. It only forgives a timestamp that is a
+# little off.
+GOOGLE_CLOCK_SKEW_SECONDS = int(os.getenv("GOOGLE_CLOCK_SKEW_SECONDS", "60"))
 OTP_EXPIRE_MINUTES = int(os.getenv("OTP_EXPIRE_MINUTES", "5"))
 
 
@@ -385,9 +394,23 @@ async def verify_google_id_token(id_token: str) -> dict:
 
     try:
         info = google_id_token.verify_oauth2_token(
-            id_token, google_requests.Request(), GOOGLE_CLIENT_ID
+            id_token,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID,
+            clock_skew_in_seconds=GOOGLE_CLOCK_SKEW_SECONDS,
         )
-    except Exception:
+    except Exception as exc:
+        # google-auth rejects a token whose `iat` is in the future relative to
+        # this machine's clock. That is our clock being wrong, not the user
+        # presenting a bad token, so the two need different answers: the
+        # generic 401 sends people hunting for a token problem that does not
+        # exist, and the client cannot fix the clock either.
+        if "used too early" in str(exc):
+            logger.error("Google ID token rejected by clock skew: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Server clock is out of sync, so Google sign-in is temporarily unavailable. Please try again.",
+            )
         logger.exception("Google ID token verification failed")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

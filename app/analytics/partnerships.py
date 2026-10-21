@@ -1,14 +1,14 @@
 """Partnership analysis for a match.
 
 A partnership is the stand two batsmen put together between one wicket and the
-next. Replaying the delivery log and cutting it at every wicket gives, for each
-innings, the opening stand, the biggest stand and the runs, balls and run rate of
-every stand in between - the figures a "who batted with whom" panel is built
-from.
+next. The cricket rules live in one place - :mod:`app.scoring.partnerships`, the
+same module the live scorecard reads - and this builder only shapes the result
+for the endpoint: for each innings, the opening stand, the biggest stand and the
+runs, balls, run rate and per-batsman contribution of every stand in between.
 
-The winning-ball rule is mirrored from the engine: the delivery that first
-reaches a chase target never registers its wicket, so the stand it would have
-ended is reported unbroken, exactly as the scorecard reports it.
+The winning-ball rule is mirrored there too: the delivery that first reaches a
+chase target never registers its wicket, so the stand it would have ended is
+reported unbroken, exactly as the scorecard reports it.
 """
 
 from __future__ import annotations
@@ -19,17 +19,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.matches.models import Match
 from app.players.identity import full_name
 from app.scoring.crud import ScoringRepository
-from app.scoring.enums import ExtraType
 from app.scoring.models import Innings
-
-# Wides and no-balls are penalty deliveries: they never count as a ball of the
-# over, so a partnership's ball count excludes them.
-_ILLEGAL_BALL_EXTRAS = (ExtraType.WIDE.value, ExtraType.NO_BALL.value)
+from app.scoring.partnerships import ILLEGAL_BALL_EXTRAS, Partnership, compute_partnerships
 
 
 def _extra(delivery) -> str:
     value = delivery.extra_type
-    return value.value if isinstance(value, ExtraType) else (value or ExtraType.NONE.value)
+    return value.value if hasattr(value, "value") else (value or "none")
 
 
 def _run_rate(runs: int, balls: int) -> float:
@@ -43,61 +39,39 @@ def _name(identities: dict, player_id: int | None) -> str | None:
     return full_name(first, last) or f"Player {player_id}"
 
 
-def _winning_delivery_id(innings: Innings, deliveries) -> int | None:
-    if innings.target is None:
-        return None
-    running = 0
-    for d in deliveries:
-        running += d.runs_batsman + d.runs_extras
-        if running >= innings.target:
-            return d.id
-    return None
+def _batter(identities: dict, stand: Partnership, player_id: int) -> dict:
+    batter = stand.batter_by_id(player_id)
+    return {
+        "player_id": player_id,
+        "name": _name(identities, player_id),
+        "runs": batter.runs if batter is not None else 0,
+        "balls": batter.balls if batter is not None else 0,
+        "contribution_percentage": stand.contribution_of(player_id),
+    }
 
 
-def _stands(innings: Innings, deliveries) -> list[dict]:
-    """Cut the delivery log into stands, one per pair, in order."""
-    winning_id = _winning_delivery_id(innings, deliveries)
-    stands: list[dict] = []
-    current: dict | None = None
-    for d in deliveries:
-        if current is None:
-            current = {
-                "batsman_1_id": d.striker_id,
-                "batsman_2_id": d.non_striker_id,
-                "runs": 0,
-                "balls": 0,
-                "player_out_id": None,
-                "unbroken": True,
-            }
-        if _extra(d) not in _ILLEGAL_BALL_EXTRAS:
-            current["balls"] += 1
-        current["runs"] += d.runs_batsman + d.runs_extras
-        if d.wicket_type is not None and d.id != winning_id:
-            current["player_out_id"] = d.dismissed_player_id
-            current["unbroken"] = False
-            stands.append(current)
-            current = None
-    if current is not None:
-        stands.append(current)
-    return stands
-
-
-def _entry(number: int, stand: dict, identities: dict) -> dict:
+def _entry(number: int, stand: Partnership, identities: dict) -> dict:
     return {
         "partnership_number": number,
-        "batsman_1_id": stand["batsman_1_id"],
-        "batsman_1_name": _name(identities, stand["batsman_1_id"]),
-        "batsman_2_id": stand["batsman_2_id"],
-        "batsman_2_name": _name(identities, stand["batsman_2_id"]),
-        "runs": stand["runs"],
-        "balls": stand["balls"],
-        "run_rate": _run_rate(stand["runs"], stand["balls"]),
+        "batsman_1_id": stand.batter1.player_id,
+        "batsman_1_name": _name(identities, stand.batter1.player_id),
+        "batsman_2_id": stand.batter2.player_id,
+        "batsman_2_name": _name(identities, stand.batter2.player_id),
+        "runs": stand.total_runs,
+        "balls": stand.total_balls,
+        "run_rate": stand.run_rate,
         # A completed stand is the fall for the wicket it ended on, and the
         # stands are numbered in that same order.
         "for_wicket": number,
-        "unbroken": stand["unbroken"],
-        "player_out_id": stand["player_out_id"],
-        "player_out_name": _name(identities, stand["player_out_id"]),
+        "unbroken": stand.unbroken,
+        "player_out_id": stand.player_out_id,
+        "player_out_name": _name(identities, stand.player_out_id),
+        # Per-batsman breakdown. ``total_runs`` mirrors ``runs`` and is the stand
+        # total including extras, so it need not equal the two batsmen's sum.
+        "total_runs": stand.total_runs,
+        "total_balls": stand.total_balls,
+        "batter1": _batter(identities, stand, stand.batter1.player_id),
+        "batter2": _batter(identities, stand, stand.batter2.player_id),
     }
 
 
@@ -130,11 +104,11 @@ async def get_partnership_analysis(
                 player_ids.add(d.dismissed_player_id)
         identities = await repo.player_identities(player_ids)
 
-        stands = _stands(innings, deliveries)
+        stands = compute_partnerships(deliveries, innings.target)
         entries = [_entry(number, stand, identities) for number, stand in enumerate(stands, 1)]
-        legal_balls = sum(1 for d in deliveries if _extra(d) not in _ILLEGAL_BALL_EXTRAS)
+        legal_balls = sum(1 for d in deliveries if _extra(d) not in ILLEGAL_BALL_EXTRAS)
         total = sum(d.runs_batsman + d.runs_extras for d in deliveries)
-        wickets = sum(1 for stand in stands if not stand["unbroken"])
+        wickets = sum(1 for stand in stands if not stand.unbroken)
 
         highest = _biggest(entries)
         if highest is not None and (
@@ -142,6 +116,9 @@ async def get_partnership_analysis(
             or (highest["runs"], highest["balls"]) > (overall["runs"], overall["balls"])
         ):
             overall = highest
+
+        # The stand still at the crease, if any: the trailing unbroken entry.
+        current = entries[-1] if entries and entries[-1]["unbroken"] else None
 
         frames.append(
             {
@@ -157,6 +134,7 @@ async def get_partnership_analysis(
                 "partnership_count": len(entries),
                 "opening_partnership": entries[0] if entries else None,
                 "highest_partnership": highest,
+                "current_partnership": current,
                 "partnerships": entries,
             }
         )

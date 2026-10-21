@@ -70,13 +70,14 @@ class FakeExpandedRepo:
         return {}
 
 
-def make_fake(order_ids, fmt="T20", target=None, innings_number=1):
+def make_fake(order_ids, fmt="T20", target=None, innings_number=1, is_super_over=False):
     match = FakeMatch(id=99, match_type=fmt)
     innings = FakeInnings(
         id=7,
         match_id=99,
         innings_number=innings_number,
         target=target,
+        is_super_over=is_super_over,
     )
     repo = FakeExpandedRepo(match, innings, order_ids)
     return ScoreEngine(repo), repo
@@ -541,6 +542,107 @@ def test_dismissed_striker_leaves_striker_id_null():
         assert card.completed is False
         assert card.awaiting_batsman is True
         assert card.wickets == 1
+
+    asyncio.run(scenario())
+
+
+def _legacy_log(repo, rows):
+    """Append raw delivery rows to the stub repository.
+
+    A row is ``(over, ball, striker, non_striker, runs_batsman, extra_type,
+    wicket_type, dismissed)``. Used to replay logs written by an older client
+    whose end-change conventions the current engine no longer produces.
+    """
+    for over, ball_no, striker, non_striker, runs, extra, wicket, dismissed in rows:
+        repo.deliveries.append(
+            DeliveryRecord(
+                innings_id=repo.innings.id,
+                over_number=over,
+                ball_number=ball_no,
+                striker_id=striker,
+                non_striker_id=non_striker,
+                bowler_id=200,
+                runs_batsman=runs,
+                runs_extras=0,
+                extra_type=extra,
+                wicket_type=wicket,
+                dismissed_player_id=dismissed,
+            )
+        )
+
+
+def test_replay_accepts_legacy_log_placing_the_survivor_at_the_other_end():
+    """A log written before the current crease rules may name the incoming
+    batsman at the striker end while the survivor keeps the non-striker end.
+    Filling only the vacant slot would duplicate the survivor; replay trusts
+    the recorded crease instead."""
+
+    async def scenario():
+        engine, repo = make_fake([70, 62, 63])
+        _legacy_log(
+            repo,
+            [
+                (1, 1, 70, 62, 0, "none", "bowled", 62),
+                (1, 2, 63, 70, 4, "none", None, None),
+            ],
+        )
+        card = await engine.get_scorecard(7)
+        by_id = {b.player_id: b for b in card.batsmen}
+        assert card.total == 4
+        # Runs follow the recorded striker, so the legacy crease cannot
+        # misattribute them.
+        assert by_id[63].runs == 4
+        assert by_id[70].runs == 0
+        assert by_id[62].out is True
+
+    asyncio.run(scenario())
+
+
+def test_replay_accepts_legacy_log_that_never_swapped_ends():
+    """The old client changed ends only on a non-wicket odd run. This log still
+    names the two batsmen at the crease, just reversed; replay trusts the
+    recorded order rather than rejecting it."""
+
+    async def scenario():
+        engine, repo = make_fake([122, 123])
+        _legacy_log(
+            repo,
+            [
+                (1, 1, 122, 123, 1, "none", None, None),
+                (1, 2, 122, 123, 2, "none", None, None),
+            ],
+        )
+        card = await engine.get_scorecard(7)
+        by_id = {b.player_id: b for b in card.batsmen}
+        assert card.total == 3
+        assert by_id[122].runs == 3
+        assert by_id[123].runs == 0
+
+    asyncio.run(scenario())
+
+
+def test_replay_accepts_super_over_deliveries_after_the_second_wicket():
+    """This app's Super Over logs carried on batting after the engine's
+    2nd-wicket all-out, so the dismissed batsman was left nominally at the
+    crease. Replay trusts the next recorded crease and still produces a card.
+    Live scoring is unaffected - only replay accepts the extra deliveries."""
+
+    async def scenario():
+        engine, repo = make_fake([1, 2, 3, 4], is_super_over=True)
+        _legacy_log(
+            repo,
+            [
+                (1, 1, 1, 2, 0, "none", "bowled", 2),
+                (1, 2, 3, 1, 0, "none", "bowled", 3),
+                (1, 3, 4, 1, 6, "none", None, None),
+            ],
+        )
+        card = await engine.get_scorecard(7)
+        by_id = {b.player_id: b for b in card.batsmen}
+        assert card.total == 6
+        assert by_id[4].runs == 6
+        assert by_id[2].out is True
+        assert by_id[3].out is True
 
     asyncio.run(scenario())
 

@@ -319,6 +319,54 @@ def test_innings_number_filter(client, as_admin, world):
     assert body["highest_partnership"]["runs"] == 16
 
 
+def test_each_stand_reports_the_two_batters_own_contribution(client, as_admin, world):
+    """The per-batter split, worked out by hand from the seeded delivery log.
+
+    Innings 1, opening stand: A0 5 off 2, A1 11 off 5 (16 runs, 7 balls).
+    Innings 1, second stand: A2 7 off 2, A0 6 off 3 (13 runs, 5 balls).
+    The contributions are shares of the pair's own runs, which here equal the
+    stand total because neither stand had an extra.
+    """
+    as_admin(world["admin"])
+    a = world["a"]
+    body = _partnerships(client, world["match_id"])
+    first = body["innings"][0]
+    stand1, stand2 = first["partnerships"]
+
+    assert stand1["total_runs"] == 16
+    assert stand1["total_balls"] == 7
+    assert stand1["batter1"]["player_id"] == a[0]
+    assert (stand1["batter1"]["runs"], stand1["batter1"]["balls"]) == (5, 2)
+    assert stand1["batter1"]["contribution_percentage"] == 31.25
+    assert stand1["batter2"]["player_id"] == a[1]
+    assert (stand1["batter2"]["runs"], stand1["batter2"]["balls"]) == (11, 5)
+    assert stand1["batter2"]["contribution_percentage"] == 68.75
+
+    assert stand2["total_runs"] == 13
+    assert {stand2["batter1"]["player_id"], stand2["batter2"]["player_id"]} == {a[0], a[2]}
+    runs_by_id = {
+        stand2["batter1"]["player_id"]: stand2["batter1"]["runs"],
+        stand2["batter2"]["player_id"]: stand2["batter2"]["runs"],
+    }
+    assert runs_by_id == {a[0]: 6, a[2]: 7}
+
+
+def test_current_partnership_is_the_unbroken_trailing_stand(client, as_admin, world):
+    as_admin(world["admin"])
+    body = _partnerships(client, world["match_id"])
+
+    first = body["innings"][0]
+    # The second stand of innings 1 was still standing when the innings ended.
+    assert first["current_partnership"]["partnership_number"] == 2
+    assert first["current_partnership"]["runs"] == 13
+
+    # The chase is a single unbroken stand of 30 (five sixes, all off B0).
+    chase = body["innings"][1]["current_partnership"]
+    assert chase["total_runs"] == 30
+    assert chase["batter1"]["contribution_percentage"] == 100.0
+    assert chase["batter2"]["contribution_percentage"] == 0.0
+
+
 def test_partnerships_404_for_other_accounts(client, as_admin, world):
     as_admin(world["admin"])
     assert client.get("/v1/matches/999999/partnerships").status_code == 404

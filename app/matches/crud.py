@@ -1,4 +1,4 @@
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -232,10 +232,39 @@ async def replace_match(db: AsyncSession, match_id: int, data: MatchCreate, user
 
 
 async def delete_match(db: AsyncSession, match_id: int, user_id: int):
+    """Delete a match together with everything derived from it.
+
+    The innings, the balls bowled and the batting order exist only because the
+    match does, so they go with it. They are removed explicitly rather than via
+    a relationship cascade because the scoring tables are a different module and
+    hold plain foreign keys with no relationship back to Match; a bare DELETE
+    would either fail at the database (Postgres) or silently leave orphan rows
+    that a later match can collide with (SQLite). A tournament fixture that
+    pointed at the match is unlinked instead of deleted, so the fixture falls
+    back to being a plan and stops counting towards the points table.
+    """
+    from app.scoring.models import Delivery, InningsBatsman
+    from app.tournaments.models import TournamentFixture
+
     result = await db.execute(select(Match).where(Match.id == match_id, Match.user_id == user_id))
     match = result.scalar_one_or_none()
     if not match:
         return False
+
+    innings_ids = list(
+        (await db.execute(select(Innings.id).where(Innings.match_id == match_id))).scalars().all()
+    )
+    if innings_ids:
+        await db.execute(delete(Delivery).where(Delivery.innings_id.in_(innings_ids)))
+        await db.execute(delete(InningsBatsman).where(InningsBatsman.innings_id.in_(innings_ids)))
+        await db.execute(delete(Innings).where(Innings.id.in_(innings_ids)))
+
+    await db.execute(
+        update(TournamentFixture)
+        .where(TournamentFixture.match_id == match_id)
+        .values(match_id=None)
+    )
+
     await db.delete(match)
     await db.commit()
     return True

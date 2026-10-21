@@ -30,22 +30,17 @@ from app.players.identity import full_name
 from app.scoring.analytics import _max_overs_for, build_innings_analytics
 from app.scoring.crud import ScoringRepository
 from app.scoring.engine import ScoreEngine, ScoreEngineError
-from app.scoring.enums import ExtraType, MatchStatus
+from app.scoring.enums import MatchStatus
 from app.scoring.models import Innings
+from app.scoring.partnerships import compute_partnerships
 from app.scoring.summary import derive_result
 from app.teams.models import Team
 
-_ILLEGAL_BALL_EXTRAS = (ExtraType.WIDE.value, ExtraType.NO_BALL.value)
 _RESULT_CODES = {"win": "W", "loss": "L", "draw": "D"}
 
 
 def _player_name(first: str | None, last: str | None, player_id: int) -> str:
     return full_name(first, last) or f"Player {player_id}"
-
-
-def _extra(delivery) -> str:
-    value = delivery.extra_type
-    return value.value if isinstance(value, ExtraType) else (value or ExtraType.NONE.value)
 
 
 def _run_rate(runs: int, legal_balls: int) -> float:
@@ -389,43 +384,20 @@ async def get_run_distribution(
 
 
 def _partnerships_for(innings: Innings, deliveries: list) -> list[dict]:
-    winning_id = None
-    if innings.target is not None:
-        running = 0
-        for d in deliveries:
-            running += d.runs_batsman + d.runs_extras
-            if running >= innings.target:
-                winning_id = d.id
-                break
-
-    stands: list[dict] = []
-    current: dict | None = None
-    wicket_count = 0
-    for d in deliveries:
-        if current is None:
-            current = {
-                "pair": (d.striker_id, d.non_striker_id),
-                "runs": 0,
-                "balls": 0,
-                "player_out_id": None,
-                "unbroken": False,
-            }
-        if _extra(d) not in _ILLEGAL_BALL_EXTRAS:
-            current["balls"] += 1
-        current["runs"] += d.runs_batsman + d.runs_extras
-        wicket = d.wicket_type
-        if wicket is not None and d.id != winning_id:
-            current["player_out_id"] = d.dismissed_player_id
-            current["unbroken"] = False
-            current["for_wicket"] = wicket_count + 1
-            stands.append(current)
-            current = None
-            wicket_count += 1
-    if current is not None:
-        current["unbroken"] = True
-        current["for_wicket"] = wicket_count + 1
-        stands.append(current)
-    return stands
+    # The cricket rules live in app.scoring.partnerships (the same module the
+    # live scorecard reads); this only maps each stand onto the chart's keys.
+    stands = compute_partnerships(deliveries, innings.target)
+    return [
+        {
+            "pair": (stand.batter1.player_id, stand.batter2.player_id),
+            "runs": stand.total_runs,
+            "balls": stand.total_balls,
+            "player_out_id": stand.player_out_id,
+            "unbroken": stand.unbroken,
+            "for_wicket": number,
+        }
+        for number, stand in enumerate(stands, 1)
+    ]
 
 
 async def get_partnerships(

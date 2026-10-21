@@ -236,3 +236,56 @@ def test_put_image_sends_explicit_content_type(monkeypatch):
     assert captured["ContentType"] == "image/webp"
     assert captured["Key"] == "players/7.png"
     assert captured["Body"] == b"bytes"
+
+
+def test_backend_defaults_to_s3(monkeypatch):
+    """No STORAGE_BACKEND means production behaviour, not a disk fallback."""
+    monkeypatch.delenv("STORAGE_BACKEND", raising=False)
+
+    import app.storage as storage
+
+    assert storage._use_local() is False
+
+
+def test_local_backend_writes_and_reads_under_uploads(monkeypatch, tmp_path):
+    """The local backend round-trips through disk and creates the prefix dir."""
+    import asyncio
+
+    import app.storage as storage
+
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    monkeypatch.setenv("UPLOADS_DIR", str(tmp_path))
+
+    asyncio.run(storage.put_image("teams/17.png", b"image-bytes", "image/png"))
+
+    assert (tmp_path / "teams" / "17.png").read_bytes() == b"image-bytes"
+    assert asyncio.run(storage.read_image("teams/17.png")) == b"image-bytes"
+
+
+def test_local_backend_read_missing_returns_none(monkeypatch, tmp_path):
+    """A missing local file degrades to None, so the route can 404 cleanly."""
+    import asyncio
+
+    import app.storage as storage
+
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    monkeypatch.setenv("UPLOADS_DIR", str(tmp_path))
+
+    assert asyncio.run(storage.read_image("teams/9999.png")) is None
+
+
+def test_local_backend_refuses_keys_that_escape_uploads(monkeypatch, tmp_path):
+    """read_image sees wire-supplied keys, so traversal must be rejected."""
+    import asyncio
+
+    import app.storage as storage
+
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    monkeypatch.setenv("UPLOADS_DIR", str(tmp_path))
+
+    for bad in ("../evil.png", "teams/../../evil.png", "/etc/passwd", ""):
+        with pytest.raises(storage.InvalidImage):
+            asyncio.run(storage.put_image(bad, b"x", "image/png"))
+        assert asyncio.run(storage.read_image(bad)) is None
+
+    assert not (tmp_path.parent / "evil.png").exists()

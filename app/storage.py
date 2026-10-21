@@ -7,6 +7,7 @@ cricketapp-s3-upload is scoped to this one bucket.
 """
 
 import os
+from pathlib import PurePosixPath
 
 import boto3
 from botocore.config import Config
@@ -17,6 +18,30 @@ REGION = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or "eu-north
 # Image uploads over the same connection as everything else, so cap the pool
 # rather than letting boto3's default of 10 idle sockets linger per worker.
 _config = Config(region_name=REGION, retries={"max_attempts": 3, "mode": "standard"})
+
+
+def _storage_backend() -> str:
+    """Which backend put_image/read_image use.
+
+    "s3" (the default) goes through the instance profile and is what production
+    runs. "local" writes under UPLOADS_DIR so a development machine with no AWS
+    role can still upload; the /uploads route already reads that directory.
+
+    Read per call rather than cached at import so it is a .env change and a
+    restart, matching UPLOADS_CDN_BASE_URL in app.main. The split is explicit
+    rather than an automatic fallback: quietly writing to disk on an EC2 host
+    that has a role would hide a broken upload path in production.
+    """
+    return os.getenv("STORAGE_BACKEND", "s3").strip().lower()
+
+
+def _uploads_dir() -> str:
+    """Directory the local backend reads and writes. Shared with app.main."""
+    return os.getenv("UPLOADS_DIR", "uploads")
+
+
+def _use_local() -> bool:
+    return _storage_backend() == "local"
 
 
 def get_client():
@@ -71,6 +96,27 @@ class InvalidImage(ValueError):
     """Raised when an upload is not an allowed image or is too large."""
 
 
+def _local_path(key: str) -> str:
+    """Resolve an object key under the local uploads directory.
+
+    Rejects anything that would escape that directory. put_image receives keys
+    built by image_key (flat prefix + database id, so no traversal is possible),
+    but read_image also sees keys that arrived over the wire, so the check lives
+    here as the last line of defence.
+    """
+    candidate = PurePosixPath(key)
+    if candidate.is_absolute() or not candidate.parts:
+        raise InvalidImage("Invalid storage key")
+    if any(part in {"", ".", ".."} for part in candidate.parts):
+        raise InvalidImage("Invalid storage key")
+
+    root = os.path.abspath(_uploads_dir())
+    path = os.path.abspath(os.path.join(root, *candidate.parts))
+    if path != root and not path.startswith(root + os.sep):
+        raise InvalidImage("Invalid storage key")
+    return path
+
+
 def image_key(prefix: str, entity_id: int, content_type: str) -> str:
     """Build the S3 key for an uploaded image.
 
@@ -93,14 +139,22 @@ def image_key(prefix: str, entity_id: int, content_type: str) -> str:
 
 
 async def put_image(key: str, data: bytes, content_type: str) -> None:
-    """Upload image bytes to S3.
+    """Upload image bytes to the configured backend.
 
     ContentType is set explicitly because presigned GETs are served with the
     stored content type. Without it a browser receives application/octet-stream
-    and downloads the file rather than rendering it.
+    and downloads the file rather than rendering it. The local backend keeps the
+    extension in the key, which is what the /uploads route keys off instead.
     """
     if len(data) > MAX_IMAGE_BYTES:
         raise InvalidImage(f"Image exceeds {MAX_IMAGE_BYTES // (1024 * 1024)}MB limit")
+
+    if _use_local():
+        path = _local_path(key)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(data)
+        return
 
     get_client().put_object(
         Bucket=BUCKET,
@@ -116,6 +170,16 @@ async def read_image(key: str) -> bytes | None:
     Returns None rather than raising so a deleted or migrated-away image
     degrades to a broken <img> instead of a 500 on the page that lists it.
     """
+    if _use_local():
+        try:
+            path = _local_path(key)
+        except InvalidImage:
+            return None
+        if not os.path.isfile(path):
+            return None
+        with open(path, "rb") as handle:
+            return handle.read()
+
     from botocore.exceptions import ClientError
 
     try:

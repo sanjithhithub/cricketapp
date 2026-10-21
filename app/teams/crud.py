@@ -1,4 +1,5 @@
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -355,12 +356,86 @@ async def replace_team(db: AsyncSession, team_id: int, data: TeamCreate, user_id
 
 
 async def delete_team(db: AsyncSession, team_id: int, user_id: int):
+    """Delete a team only when it has no history, and never touch its players.
+
+    Returns ``None`` when the team does not belong to this account, ``False``
+    when it has history so the caller can answer 409, and ``True`` on success.
+
+    Players are never deleted here. They are reached through
+    ``player_team_assignments`` and only that association is dropped: team_id is
+    part of that table's composite primary key so the rows cannot simply be
+    nulled, but the player rows themselves - their ids, player codes, phones and
+    profiles - survive untouched and stay available to scorecards. Moving a
+    player between teams is a new assignment, never a new player.
+
+    A team that has played a match is part of recorded history. Its players'
+    scorecards, partnerships, batting and bowling statistics name it by id, and
+    deleting it would either destroy that record or leave the points table and
+    tournament fixtures pointing at a team that no longer exists. The same is
+    true of a team that is entered in a tournament. So a team with history is
+    refused rather than deleted, which keeps every past scorecard intact and
+    every player reassignable; the caller removes it from the tournament first.
+
+    The association cleanup and the team delete are done explicitly, on both
+    SQLite and PostgreSQL alike, because there is no DB-level CASCADE from teams
+    to either table.
+    """
+    from app.matches.models import Match
+    from app.scoring.models import Innings
+    from app.tournaments.models import TournamentFixture, TournamentTeam
+
     result = await db.execute(select(Team).where(Team.id == team_id, Team.user_id == user_id))
     team = result.scalar_one_or_none()
     if not team:
+        return None
+
+    referenced = (
+        await db.execute(
+            select(func.count(Match.id)).where(
+                (Match.team_a_id == team_id) | (Match.team_b_id == team_id)
+            )
+        )
+    ).scalar()
+    if referenced:
         return False
-    await db.delete(team)
-    await db.commit()
+
+    referenced = (
+        await db.execute(
+            select(func.count(Innings.id)).where(
+                (Innings.batting_team_id == team_id) | (Innings.bowling_team_id == team_id)
+            )
+        )
+    ).scalar()
+    if referenced:
+        return False
+
+    referenced = (
+        await db.execute(
+            select(func.count(TournamentTeam.id)).where(TournamentTeam.team_id == team_id)
+        )
+    ).scalar()
+    if referenced:
+        return False
+
+    referenced = (
+        await db.execute(
+            select(func.count(TournamentFixture.id)).where(
+                (TournamentFixture.team_a_id == team_id) | (TournamentFixture.team_b_id == team_id)
+            )
+        )
+    ).scalar()
+    if referenced:
+        return False
+
+    # Only the association goes away; the players stay.
+    await db.execute(delete(PlayerTeamAssignment).where(PlayerTeamAssignment.team_id == team_id))
+
+    try:
+        await db.delete(team)
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        return False
     return True
 
 

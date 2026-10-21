@@ -197,6 +197,35 @@ class BowlerCardOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class PartnershipBatterOut(BaseModel):
+    """One batsman's share of the stand at the crease."""
+
+    player_id: int
+    name: str
+    runs: int
+    balls: int
+    contribution_percentage: float
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PartnershipOut(BaseModel):
+    """The current stand, in the shape a live scoreboard shows it.
+
+    ``total_runs`` counts every team run added while the pair were together,
+    extras included, so it can be larger than the two batsmen's own runs. A stand
+    with no legal ball yet reports a 0.0 run rate.
+    """
+
+    batter1: PartnershipBatterOut
+    batter2: PartnershipBatterOut
+    total_runs: int
+    total_balls: int
+    run_rate: float
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ScorecardResponse(BaseModel):
     innings_id: int
     match_id: int
@@ -233,6 +262,10 @@ class ScorecardResponse(BaseModel):
     batsmen: list[BatsmanCardOut]
     bowlers: list[BowlerCardOut]
     fall_of_wickets: list[FallOfWicketOut] = []
+    # The stand at the crease right now, or null between a wicket and the
+    # incoming pick (and before the first ball of an innings with fewer than two
+    # batsmen). Its total_runs include partnership extras.
+    partnership: PartnershipOut | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

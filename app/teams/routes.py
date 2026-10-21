@@ -305,8 +305,15 @@ async def delete_team_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     deleted = await delete_team(db, team_id, current_user.id)
-    if not deleted:
+    if deleted is None:
         raise HTTPException(404, "Team not found")
+    if deleted is False:
+        raise HTTPException(
+            409,
+            "This team has played matches or is entered in a tournament, so its "
+            "scorecards and statistics must be kept. Remove it from the "
+            "tournament first; its players stay available after the team goes.",
+        )
 
 
 @router.post(

@@ -1,7 +1,7 @@
 import os
 from datetime import timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -636,12 +636,66 @@ async def replace_player(db: AsyncSession, player_id: int, data: PlayerCreate, u
 
 
 async def delete_player(db: AsyncSession, player_id: int, user_id: int):
+    """Delete a player, or refuse once they have appeared in a match.
+
+    Returns ``None`` when the player does not belong to this account, ``False``
+    when they are already part of scored data (so the caller can answer 409
+    instead of corrupting a scorecard), and ``True`` on success.
+
+    A player's deliveries, batting-order slots and man-of-the-match award are
+    plain foreign keys in the scoring tables with no ORM relationship back to
+    Player, so a bare DELETE would either fail at the database (Postgres) or
+    silently orphan rows that then break every analysis built from the ball log
+    (SQLite). Squad assignments have no cascade on this side either, so they are
+    removed by hand; aliases own a delete-orphan cascade and clean themselves up.
+    """
+    from app.matches.models import Match
+    from app.scoring.models import Delivery, Innings, InningsBatsman
+
     result = await db.execute(
         select(Player).where(Player.id == player_id, Player.user_id == user_id)
     )
     player = result.scalar_one_or_none()
     if not player:
+        return None
+
+    referenced = (
+        await db.execute(
+            select(func.count(Delivery.id)).where(
+                (Delivery.striker_id == player_id)
+                | (Delivery.non_striker_id == player_id)
+                | (Delivery.bowler_id == player_id)
+                | (Delivery.dismissed_player_id == player_id)
+                | (Delivery.fielder_id == player_id)
+            )
+        )
+    ).scalar()
+    if referenced:
         return False
+
+    referenced = (
+        await db.execute(
+            select(func.count(InningsBatsman.id)).where(InningsBatsman.player_id == player_id)
+        )
+    ).scalar()
+    if referenced:
+        return False
+
+    referenced = (
+        await db.execute(select(func.count(Innings.id)).where(Innings.next_batsman_id == player_id))
+    ).scalar()
+    if referenced:
+        return False
+
+    referenced = (
+        await db.execute(select(func.count(Match.id)).where(Match.player_of_match_id == player_id))
+    ).scalar()
+    if referenced:
+        return False
+
+    await db.execute(
+        delete(PlayerTeamAssignment).where(PlayerTeamAssignment.player_id == player_id)
+    )
     await db.delete(player)
     await db.commit()
     return True
@@ -725,7 +779,17 @@ async def assign_player_to_team(
     )
     db.add(assignment)
     await db.commit()
-    return assignment, None
+    # Return the team and level names with the assignment: the response schema is
+    # a PlayerTeamInfo (it carries names for the picker), and a bare assignment
+    # row has neither, which used to fail response validation and surface as a
+    # 500 even though the row had been written.
+    return {
+        "team_id": data.team_id,
+        "team_name": team.name,
+        "level_id": data.level_id,
+        "level_name": level.name,
+        "role": data.role,
+    }, None
 
 
 async def _check_xi_capacity(
@@ -999,7 +1063,15 @@ async def assign_player_to_team_by_phone(
     )
     db.add(assignment)
     await db.commit()
-    return assignment, None
+    # Same reason as assign_player_to_team: the response schema carries the team
+    # and level names, which a bare assignment row does not.
+    return {
+        "team_id": team_id,
+        "team_name": team.name,
+        "level_id": team.level_id,
+        "level_name": level.name if level else "Unknown",
+        "role": role,
+    }, None
 
 
 async def assign_players_to_team_bulk(
