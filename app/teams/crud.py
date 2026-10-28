@@ -1,9 +1,12 @@
+from datetime import date
+
 from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.players.identity import mask_mobile
+from app.players.identity import full_name, mask_mobile
+from app.team_owners.models import TeamOwnership
 from app.teams.models import PlayerTeamAssignment, Team
 from app.teams.schemas import SquadPlayer, TeamCreate, TeamUpdate
 
@@ -122,6 +125,67 @@ async def set_team_captains(
     )
 
 
+async def get_team_captaincy(
+    db: AsyncSession, team_id: int
+) -> tuple[SquadPlayer | None, SquadPlayer | None]:
+    """Read the captaincy straight off this team's squad rows.
+
+    There is no second copy of the captaincy to fall out of sync: the flags
+    live on ``player_team_assignments`` and that is the only place they are
+    read from. Rows are ordered by player id and the first flagged row wins, so
+    a squad carrying more than one flag answers the same way on every read
+    rather than depending on whatever order the database felt like returning.
+    A row whose player row is missing is skipped instead of raising - there is
+    no name to show for a player that is not there.
+
+    Returns ``(captain, vice_captain)``, either possibly ``None`` when that
+    title is unset. Ownership is the caller's job, exactly as it is for the
+    captaincy write.
+    """
+    result = await db.execute(
+        select(PlayerTeamAssignment)
+        .options(selectinload(PlayerTeamAssignment.player))
+        .where(PlayerTeamAssignment.team_id == team_id)
+        .order_by(PlayerTeamAssignment.player_id)
+    )
+    rows = [a for a in result.scalars().all() if a.player is not None]
+    captain = next((a for a in rows if a.is_captain), None)
+    vice = next((a for a in rows if a.is_vice_captain), None)
+    return (
+        _squad_row(captain) if captain else None,
+        _squad_row(vice) if vice else None,
+    )
+
+
+async def get_captain_eligible_players(
+    db: AsyncSession, team_id: int, user_id: int
+) -> list[SquadPlayer] | None:
+    """This team's playing XI - the only players who may hold a captaincy.
+
+    ``None`` when the team is unknown to this account, so the route can answer
+    404 before reading a single squad row.
+
+    The squad is joined through the assignment table rather than filtered on
+    the player table precisely so a player belonging to another team can never
+    appear here: membership *is* the assignment row, and the WHERE clause pins
+    it to this ``team_id``.
+    """
+    team = await db.execute(select(Team).where(Team.id == team_id, Team.user_id == user_id))
+    if team.scalar_one_or_none() is None:
+        return None
+
+    result = await db.execute(
+        select(PlayerTeamAssignment)
+        .options(selectinload(PlayerTeamAssignment.player))
+        .where(
+            PlayerTeamAssignment.team_id == team_id,
+            PlayerTeamAssignment.role == "playing_11",
+        )
+        .order_by(PlayerTeamAssignment.player_id)
+    )
+    return [_squad_row(a) for a in result.scalars().all() if a.player is not None]
+
+
 async def get_teams(
     db: AsyncSession,
     user_id: int,
@@ -200,6 +264,7 @@ async def get_team_detail(db: AsyncSession, team_id: int, user_id: int):
             selectinload(Team.country),
             selectinload(Team.state),
             selectinload(Team.city),
+            selectinload(Team.ownerships).selectinload(TeamOwnership.owner),
         )
         .where(Team.id == team_id, Team.user_id == user_id)
     )
@@ -247,7 +312,48 @@ async def get_team_detail(db: AsyncSession, team_id: int, user_id: int):
         "playing_11": playing_11,
         "substitutes": substitutes,
         "bench": bench,
+        "owners": _owner_rows(team),
     }
+
+
+def _owner_rows(team) -> list[dict]:
+    """The team's owners, as the team panel shows them.
+
+    The live stakes come first, then the historical ones, and within each
+    group the oldest first - so the panel reads as "who runs this club now",
+    followed by "who ran it before". The owner record itself is not copied
+    into the team: it lives once, in the owners register, and is read from
+    there.
+    """
+    from app.team_owners.schemas import TeamOwnerOnTeam
+
+    stakes = sorted(
+        list(team.ownerships or []),
+        key=lambda stake: (
+            0 if stake.ownership_status == "active" else 1,
+            stake.ownership_start_date or date.max,
+            stake.id,
+        ),
+    )
+    rows = []
+    for stake in stakes:
+        owner = stake.owner
+        if owner is None:
+            continue
+        rows.append(
+            TeamOwnerOnTeam(
+                ownership_id=stake.id,
+                owner_id=owner.id,
+                full_name=full_name(owner.first_name, owner.last_name),
+                profile_image=owner.profile_image,
+                ownership_type=stake.ownership_type,
+                ownership_percentage=stake.ownership_percentage,
+                ownership_status=stake.ownership_status,
+                ownership_start_date=stake.ownership_start_date,
+                ownership_end_date=stake.ownership_end_date,
+            )
+        )
+    return rows
 
 
 async def get_team_squad(db: AsyncSession, team_id: int, user_id: int):

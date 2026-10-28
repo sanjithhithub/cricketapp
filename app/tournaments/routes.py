@@ -15,6 +15,7 @@ from app.database import get_db
 from app.tournaments.analytics import (
     build_leaderboards,
     build_points_table,
+    build_summary,
     fixture_public_rows,
 )
 from app.tournaments.crud import (
@@ -30,13 +31,17 @@ from app.tournaments.crud import (
     list_tournament_teams,
     remove_team,
     set_fixture_result,
+    start_fixture_match,
     tournament_response,
+    unlink_fixture_result,
     update_fixture,
     update_tournament,
 )
 from app.tournaments.schemas import (
     FixtureCreate,
     FixtureGenerate,
+    FixtureMatchResponse,
+    FixtureMatchStart,
     FixtureResponse,
     FixtureResult,
     FixtureUpdate,
@@ -45,6 +50,7 @@ from app.tournaments.schemas import (
     TournamentCreate,
     TournamentLeaderboardResponse,
     TournamentResponse,
+    TournamentSummaryResponse,
     TournamentTeamAdd,
     TournamentTeamList,
     TournamentTeamResponse,
@@ -110,6 +116,26 @@ async def get_tournament_endpoint(
 ):
     tournament = await _require_tournament(db, tournament_id, current_user.id)
     return await tournament_response(db, tournament)
+
+
+@router.get(
+    "/tournaments/{tournament_id}/summary",
+    response_model=TournamentSummaryResponse,
+    responses={"404": NOT_FOUND},
+)
+async def tournament_summary_endpoint(
+    tournament_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Fixture and result counts for the tournament header.
+
+    The counts are team results from completed, linked matches: a decided match
+    contributes one win and one loss, a tie two ties, an abandoned match two
+    no-results. Upcoming fixtures are counted separately in ``fixture_count``.
+    """
+    tournament = await _require_tournament(db, tournament_id, current_user.id)
+    return await build_summary(db, tournament)
 
 
 @router.patch(
@@ -182,11 +208,15 @@ async def add_tournament_team_endpoint(
 async def remove_tournament_team_endpoint(
     tournament_id: int,
     team_id: int,
+    confirm: bool = Query(
+        False,
+        description="Confirm deleting unplayed fixtures that reference a team being removed.",
+    ),
     current_user: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     tournament = await _require_tournament(db, tournament_id, current_user.id)
-    removed, error = await remove_team(db, tournament, team_id)
+    removed, error = await remove_team(db, tournament, team_id, confirm=confirm)
     if error:
         raise HTTPException(400, error)
     if not removed:
@@ -245,7 +275,7 @@ async def generate_fixtures_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     tournament = await _require_tournament(db, tournament_id, current_user.id)
-    _count, error = await generate_fixtures(db, tournament, data.legs, data.replace)
+    _count, error = await generate_fixtures(db, tournament, data.legs, data.replace, data.confirm)
     if error:
         raise HTTPException(400, error)
     return await fixture_public_rows(db, tournament.id)
@@ -299,7 +329,11 @@ async def delete_fixture_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     tournament = await _require_tournament(db, tournament_id, current_user.id)
-    deleted = await delete_fixture(db, tournament, fixture_id)
+    deleted, error = await delete_fixture(db, tournament, fixture_id)
+    if error:
+        if error == "Fixture not found":
+            raise HTTPException(404, error)
+        raise HTTPException(400, error)
     if not deleted:
         raise HTTPException(404, "Fixture not found")
 
@@ -328,6 +362,69 @@ async def set_fixture_result_endpoint(
     return rows[0]
 
 
+@router.post(
+    "/tournaments/{tournament_id}/fixtures/{fixture_id}/match",
+    response_model=FixtureMatchResponse,
+    responses={"400": BAD_REQUEST, "404": NOT_FOUND},
+)
+async def start_fixture_match_endpoint(
+    tournament_id: int,
+    fixture_id: int,
+    data: FixtureMatchStart,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create and link a scoreable match from a fixture.
+
+    The match uses the fixture's teams, collects toss details here (they are
+    required by a new match), and links ``match_id`` to the fixture at creation.
+    If a match is already linked, this is idempotent and returns the existing
+    match rather than creating a duplicate.
+    """
+    tournament = await _require_tournament(db, tournament_id, current_user.id)
+    fixture, match, created, error = await start_fixture_match(
+        db, tournament, fixture_id, data, current_user.id
+    )
+    if error:
+        if error == "Fixture not found":
+            raise HTTPException(404, error)
+        raise HTTPException(400, error)
+    if fixture is None or match is None:
+        raise HTTPException(400, "Unable to start this fixture")
+    return FixtureMatchResponse(
+        fixture_id=fixture.id,
+        match_id=match.id,
+        created=created,
+        match_status=match.status,
+    )
+
+
+@router.delete(
+    "/tournaments/{tournament_id}/fixtures/{fixture_id}/result",
+    status_code=204,
+    responses={"400": BAD_REQUEST, "404": NOT_FOUND},
+)
+async def unlink_fixture_result_endpoint(
+    tournament_id: int,
+    fixture_id: int,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Detach the linked match, keeping the match and its scorecard.
+
+    The bracket slot this fixture feeds is cleared, so the next round becomes
+    undecided again rather than keeping a winner it no longer has.
+    """
+    tournament = await _require_tournament(db, tournament_id, current_user.id)
+    fixture, error = await unlink_fixture_result(db, tournament, fixture_id)
+    if error:
+        if error == "Fixture not found":
+            raise HTTPException(404, error)
+        raise HTTPException(400, error)
+    if fixture is None:
+        raise HTTPException(404, "Fixture not found")
+
+
 @router.get(
     "/tournaments/{tournament_id}/points-table",
     response_model=PointsTableResponse,
@@ -346,12 +443,21 @@ async def points_table_endpoint(
     """
     tournament = await _require_tournament(db, tournament_id, current_user.id)
     table = await build_points_table(db, tournament)
+    applicable = tournament.format != "knockout"
+    if not applicable:
+        message = "Not applicable for knockout format."
+    elif not table or all(row["played"] == 0 for row in table):
+        message = "No completed matches yet. Standings update when results are linked."
+    else:
+        message = None
     return PointsTableResponse(
         tournament_id=tournament.id,
         tournament_name=tournament.name,
         format=tournament.format,
         status=tournament.status,
         table=table,
+        applicable=applicable,
+        message=message,
     )
 
 
@@ -378,4 +484,5 @@ async def leaderboards_endpoint(
         tournament_name=tournament.name,
         top_run_scorers=data["top_run_scorers"],
         top_wicket_takers=data["top_wicket_takers"],
+        matches_considered=data["matches_considered"],
     )

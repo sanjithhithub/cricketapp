@@ -96,6 +96,41 @@ class InvalidImage(ValueError):
     """Raised when an upload is not an allowed image or is too large."""
 
 
+# The magic numbers of the formats the app accepts.
+#
+# A client-declared content type is a claim, not a fact: it is a header the
+# caller controls, and anything can be sent with "Content-Type: image/png"
+# attached. The bytes themselves are what say what the file is, so the type of
+# an upload is detected from them and the declared header is never trusted.
+_IMAGE_SIGNATURES: tuple[tuple[bytes, str], ...] = (
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def sniff_image_type(data: bytes) -> str | None:
+    """The image type the bytes actually are, or ``None`` if they are not one.
+
+    Detected from the file's own signature rather than from the content type
+    the client sent, so a request that claims to be a PNG but carries a
+    script is refused instead of being written to the bucket and served back
+    with a content type that makes a browser run it.
+
+    A WebP file is a RIFF container with "WEBP" at offset 8, so it needs its own
+    check rather than a prefix match.
+    """
+    if not data:
+        return None
+    for signature, media_type in _IMAGE_SIGNATURES:
+        if data.startswith(signature):
+            return media_type
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def _local_path(key: str) -> str:
     """Resolve an object key under the local uploads directory.
 
@@ -189,3 +224,32 @@ async def read_image(key: str) -> bytes | None:
             return None
         raise
     return response["Body"].read()
+
+
+async def delete_image(key: str) -> bool:
+    """Delete an object, and report whether there was one to delete.
+
+    A missing object is not an error. The caller is cleaning up after a
+    replace - the old photo of an official who has just uploaded a new one -
+    and the file may already be gone, in which case the cleanup has nothing to
+    do and the record is what matters.
+    """
+    if _use_local():
+        try:
+            path = _local_path(key)
+        except InvalidImage:
+            return False
+        if not os.path.isfile(path):
+            return False
+        os.remove(path)
+        return True
+
+    from botocore.exceptions import ClientError
+
+    try:
+        get_client().delete_object(Bucket=BUCKET, Key=key)
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in {"NoSuchKey", "404"}:
+            return False
+        raise
+    return True

@@ -906,6 +906,10 @@ async def get_available_players_for_team(
 ) -> tuple[list[dict] | None, str | None, int]:
     """Players this user owns who are not on a squad at this level.
 
+    "Not on a squad" covers this team's own squad first: a player the team
+    has already added is never offered back to it, whatever the assignment's
+    level says, then anyone held by another team at the same level.
+
     The rows carry player_code, photo and current club alongside the name, and
     mask the phone number, because a dropdown is exactly where two same-named
     players have to be told apart and where a full number does not belong.
@@ -920,9 +924,23 @@ async def get_available_players_for_team(
 
     level_id = team.level_id
 
+    # Two rules, and the second is not a substitute for the first.
+    #
+    # * anyone already on *this* squad is out, whatever level the assignment
+    #   row carries - the picker must never offer a player the team already
+    #   has, and a row whose level disagrees with its team's level (an older
+    #   write, a client that sent its own level id) would slip past a level
+    #   only test and put a squad member straight back in the list;
+    # * anyone on a squad at this level is out too, because a player does not
+    #   turn out for two teams in the same competition.
     assigned_subq = (
         select(PlayerTeamAssignment.player_id)
-        .where(PlayerTeamAssignment.level_id == level_id)
+        .where(
+            or_(
+                PlayerTeamAssignment.team_id == team_id,
+                PlayerTeamAssignment.level_id == level_id,
+            )
+        )
         .distinct()
         .scalar_subquery()
     )

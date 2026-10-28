@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from app.levels.models import TeamLevel
     from app.models import City, Country, State
     from app.players.models import Player
+    from app.team_owners.models import TeamOwnership
 
 
 class PlayerTeamAssignment(Base):
@@ -71,6 +72,16 @@ class Team(Base):
     # the *association* rows when the team goes away - it never deletes the
     # players themselves, whose rows live in the players table and stay intact.
     assignments: Mapped[list[PlayerTeamAssignment]] = relationship(
+        back_populates="team", cascade="all, delete-orphan"
+    )
+    # The owners of this team, and the terms of each stake. A team may have
+    # more than one owner, so the link is a table of its own rather than a
+    # column.
+    #
+    # The cascade is on the *link*, not on the owners: deleting a team removes
+    # the ownership rows that only existed because of it, and never the owners
+    # themselves, whose rows live in the team_owners table and stay intact.
+    ownerships: Mapped[list[TeamOwnership]] = relationship(
         back_populates="team", cascade="all, delete-orphan"
     )
     country: Mapped[Country] = relationship()

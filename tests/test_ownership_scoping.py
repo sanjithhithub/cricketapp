@@ -490,11 +490,15 @@ def _fixture_match_id(fixture_id):
     return asyncio.run(fetch())
 
 
-def _scored_match(client, refs, *, a_suffix, b_suffix, team_a, team_b):
-    """Two players a side, a one-over match with one ball bowled.
+def _scored_match(client, refs, *, a_suffix, b_suffix, team_a, team_b, complete=False):
+    """Two players a side, a one-over match played to completion or to one ball.
 
     Returns (match_id, striker_id, bowler_id) so a test can delete the match or
-    a player who has actually appeared in it.
+    a player who has actually appeared in it. With ``complete=True`` the two
+    innings are played out - team A's one over, then team B chasing and falling
+    short - so the match ends completed and may carry a fixture result. With the
+    default ``complete=False`` only one ball is bowled, which is all tests of
+    deletion behaviour need.
     """
     players_a = [
         client.post("/v1/players", json=_player_payload(refs, a_suffix + i)).json()["id"]
@@ -549,6 +553,45 @@ def _scored_match(client, refs, *, a_suffix, b_suffix, team_a, team_b):
         },
     )
     assert ball.status_code == 201, ball.text
+
+    if complete:
+        # Team A's one over runs out at 1: read the crease before every ball,
+        # because the striker the engine expects moves with the last delivery.
+        for _ in range(5):
+            card = client.get(f"/v1/matches/{match_id}/scorecard").json()
+            ball = client.post(
+                f"/v1/matches/{match_id}/deliveries",
+                json={
+                    "striker_id": card["striker_id"],
+                    "non_striker_id": card["non_striker_id"],
+                    "bowler_id": players_b[0],
+                    "runs_batsman": 0,
+                },
+            )
+            assert ball.status_code == 201, ball.text
+
+        # Team B chases 2 and makes 0, so the chase closes the match.
+        start = client.post(
+            f"/v1/matches/{match_id}/start-innings",
+            json={"batting_order": players_b},
+        )
+        assert start.status_code == 200, start.text
+        chase = start.json()
+        for _ in range(6):
+            ball = client.post(
+                f"/v1/matches/{match_id}/deliveries",
+                json={
+                    "striker_id": chase["striker_id"],
+                    "non_striker_id": chase["non_striker_id"],
+                    "bowler_id": card["striker_id"],
+                    "runs_batsman": 0,
+                },
+            )
+            assert ball.status_code == 201, ball.text
+            chase = ball.json()
+            if chase.get("completed"):
+                break
+
     return match_id, card["striker_id"], players_b[0]
 
 
@@ -588,8 +631,8 @@ def test_delete_match_unlinks_tournament_fixture(client, users, refs, as_user):
         "/v1/teams", json={**_team_payload(refs), "name": "Fixture Unlink B", "short_name": "FUB"}
     ).json()["id"]
 
-    match_id, _, _ = _scored_match(
-        client, refs, a_suffix=60, b_suffix=70, team_a=team_a, team_b=team_b
+    match_id, striker, _ = _scored_match(
+        client, refs, a_suffix=60, b_suffix=70, team_a=team_a, team_b=team_b, complete=True
     )
 
     tournament = client.post(

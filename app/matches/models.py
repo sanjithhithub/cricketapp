@@ -10,6 +10,7 @@ from app.database import Base
 
 if TYPE_CHECKING:
     from app.players.models import Player
+    from app.referees.models import Referee
     from app.teams.models import Team
 
 
@@ -28,6 +29,19 @@ class Match(Base):
     toss_winner_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
     toss_decision: Mapped[str] = mapped_column(String(10))
 
+    # The three official slots of the match.
+    #
+    # The linked referee record is the source of truth: it carries the photo,
+    # the nationality, the experience and the contact details the officials
+    # panel shows. The `*_name` columns beside it are a display mirror, kept
+    # because a match has always been able to name an official in plain text -
+    # an account that never registered a referee still gets a scorecard.
+    #
+    # Nullable: a match may be created before its officials are appointed, and
+    # a slot may be left empty for a match with no match referee.
+    referee_1_id: Mapped[int | None] = mapped_column(ForeignKey("referees.id"), nullable=True)
+    referee_2_id: Mapped[int | None] = mapped_column(ForeignKey("referees.id"), nullable=True)
+    match_referee_id: Mapped[int | None] = mapped_column(ForeignKey("referees.id"), nullable=True)
     referee_1_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     referee_2_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     match_referee_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -57,3 +71,10 @@ class Match(Base):
     team_a: Mapped[Team] = relationship(foreign_keys=[team_a_id])
     team_b: Mapped[Team] = relationship(foreign_keys=[team_b_id])
     toss_winner: Mapped[Team] = relationship(foreign_keys=[toss_winner_id])
+    # The three official slots, each pointing at its own referee row, so the
+    # same official can officiate two different matches. The referee records
+    # themselves are what the match sheet answers with, because the details -
+    # photo, nationality, experience - live on the referee.
+    referee_1: Mapped[Referee | None] = relationship(foreign_keys=[referee_1_id])
+    referee_2: Mapped[Referee | None] = relationship(foreign_keys=[referee_2_id])
+    match_referee: Mapped[Referee | None] = relationship(foreign_keys=[match_referee_id])

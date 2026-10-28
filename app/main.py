@@ -13,6 +13,7 @@ from app.analytics.routes import router as analytics_router
 from app.api_docs import (
     BAD_REQUEST,
     OPENAPI_TAGS,
+    PAGE_HEADER_NAMES,
     PAGINATION_HEADER_NAMES,
     install_openapi,
 )
@@ -30,6 +31,7 @@ from app.levels.routes import router as levels_router
 from app.matches.routes import router as matches_router
 from app.players.crud import mark_player_phone_verified
 from app.players.routes import router as players_router
+from app.referees.routes import router as referees_router
 from app.schemas import (
     CountryCodeOut,
     CountryOut,
@@ -40,6 +42,7 @@ from app.schemas import (
 from app.scoring.routes import router as scoring_router
 from app.seed import seed_levels, seed_locations
 from app.storage import read_image
+from app.team_owners.routes import router as team_owners_router
 from app.teams.routes import router as teams_router
 from app.tournaments.routes import router as tournaments_router
 from app.visualization.routes import router as visualization_router
@@ -87,7 +90,20 @@ app = FastAPI(
         "errors, which use FastAPI's `detail` array.\n\n"
         "**Pagination.** List endpoints return a bare array and describe the page "
         "in the `X-Total-Count`, `X-Has-More`, `X-Skip` and `X-Limit` response "
-        "headers. A page is never silently truncated: check `X-Has-More`."
+        "headers. A page is never silently truncated: check `X-Has-More`.\n\n"
+        "**Team owners.** The owners of a club live in one register "
+        "(`/v1/team-owners`), and the teams each one holds live in a separate "
+        "book (`/v1/teams/{team_id}/owners`), because one person may own several "
+        "clubs on different terms. An owner's stake is ended rather than deleted, "
+        "so a club's history keeps the record of who ran it.\n\n"
+        "**Google sign-in.** `POST /v1/auth/google` takes a Google ID token and "
+        "returns this application's own access and refresh tokens. The server "
+        "verifies the token's signature, issuer, audience and expiry against "
+        "Google's published keys, and matches the account on Google's `sub` claim "
+        "before falling back to the verified email address. Configure "
+        "`GOOGLE_CLIENT_ID` (and, for the web client, the corresponding Vite "
+        "variable) - no client secret is needed for the ID-token flow, and none "
+        "is stored in this repository."
     ),
     openapi_tags=OPENAPI_TAGS,
 )
@@ -185,7 +201,7 @@ app.add_middleware(
     # list is invisible to fetch() and XHR, which would leave browser clients
     # unable to see whether a page was truncated - exactly the bug the headers
     # were added to solve.
-    expose_headers=["Content-Length", "Content-Type", *PAGINATION_HEADER_NAMES],
+    expose_headers=["Content-Length", "Content-Type", *PAGINATION_HEADER_NAMES, *PAGE_HEADER_NAMES],
 )
 
 routers = [
@@ -194,6 +210,8 @@ routers = [
     (teams_router, [Depends(get_current_user)]),
     (levels_router, [Depends(get_current_user)]),
     (matches_router, [Depends(get_current_user)]),
+    (referees_router, [Depends(get_current_user)]),
+    (team_owners_router, [Depends(get_current_user)]),
     (scoring_router, [Depends(get_current_user)]),
     (tournaments_router, [Depends(get_current_user)]),
     (leaderboards_router, [Depends(get_current_user)]),

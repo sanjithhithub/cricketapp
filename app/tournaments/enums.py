@@ -26,5 +26,18 @@ class FixtureStage(str, Enum):
     LEAGUE = "league"
     QUALIFIER = "qualifier"
     ELIMINATOR = "eliminator"
+    QUARTERFINAL = "quarterfinal"
     SEMIFINAL = "semifinal"
     FINAL = "final"
+
+
+# The stages a generated knockout bracket is made of, in playing order. The
+# league stage is deliberately absent: regenerating a knockout draw must never
+# delete the league fixtures of a league-plus-knockout competition.
+KNOCKOUT_STAGES: tuple[FixtureStage, ...] = (
+    FixtureStage.QUALIFIER,
+    FixtureStage.ELIMINATOR,
+    FixtureStage.QUARTERFINAL,
+    FixtureStage.SEMIFINAL,
+    FixtureStage.FINAL,
+)

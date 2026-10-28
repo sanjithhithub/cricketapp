@@ -4,6 +4,9 @@ from sqlalchemy.orm import selectinload
 
 from app.matches.models import Match
 from app.matches.schemas import MatchCreate, MatchUpdate
+from app.players.identity import full_name
+from app.referees.crud import OFFICIAL_SLOTS, resolve_match_referees, sync_match_assignments
+from app.referees.models import MatchRefereeAssignment
 from app.scoring.crud import sync_match_result
 from app.scoring.enums import ExtraType, MatchStatus
 from app.scoring.models import Delivery, Innings
@@ -53,6 +56,55 @@ async def _validate_player_of_match(
     if result.scalar_one_or_none() is None:
         return "Player of the match must be a player in Team A or Team B"
     return None
+
+
+async def _resolve_officials(
+    db: AsyncSession, referee_ids: dict[str, int | None], user_id: int
+) -> tuple[dict[str, object], list[str]]:
+    """Check the officials a match names and return them by slot.
+
+    The rules live in ``app.referees.crud``: an official must belong to this
+    account, and the same person cannot fill two slots of one match.
+    """
+    return await resolve_match_referees(db, referee_ids, user_id)
+
+
+def _officials_from_match(match: Match) -> dict[str, int | None]:
+    """The official ids a match currently carries, by slot."""
+    return {slot: getattr(match, id_column) for slot, id_column, _, _ in OFFICIAL_SLOTS}
+
+
+def _apply_official_names(
+    match: Match,
+    resolved: dict[str, object],
+    changed_slots: set[str],
+    changed_names: set[str] | None = None,
+) -> None:
+    """Keep the free-text name columns in step with the linked officials.
+
+    A linked official is the source of truth for their name, so the mirror
+    beside it is rewritten from the record rather than taken from the request:
+    the two can then never disagree on a scorecard. A slot with no linked
+    official keeps the plain name the match has always been able to carry.
+
+    ``changed_slots`` holds the slots whose id the request touched. A slot that
+    was explicitly unlinked loses the name that was mirrored from the official -
+    unless the request named a replacement in the same breath, which the
+    request's own name wins over. ``changed_names`` holds the name columns the
+    request set explicitly, and is what tells the two apart: a slot and a name
+    column are different fields, and only the request says which one it meant.
+    """
+    changed_names = changed_names or set()
+    for slot, _id_column, name_column, _ in OFFICIAL_SLOTS:
+        referee = resolved.get(slot)
+        if referee is not None:
+            setattr(
+                match,
+                name_column,
+                full_name(referee.first_name, referee.last_name),
+            )
+        elif slot in changed_slots and name_column not in changed_names:
+            setattr(match, name_column, None)
 
 
 async def _max_legal_balls_bowled(db: AsyncSession, match_id: int) -> int:
@@ -141,7 +193,7 @@ async def get_match(db: AsyncSession, match_id: int, user_id: int):
     return match
 
 
-async def create_match(db: AsyncSession, data: MatchCreate, user_id: int):
+async def create_match(db: AsyncSession, data: MatchCreate, user_id: int, *, commit: bool = True):
     errors = await _validate_teams(db, data.team_a_id, data.team_b_id, data.toss_winner_id, user_id)
     errors += [
         e
@@ -152,11 +204,32 @@ async def create_match(db: AsyncSession, data: MatchCreate, user_id: int):
         ]
         if e
     ]
+
+    # The officials are checked before the match is written, so a match never
+    # exists naming an official this account does not have on file.
+    resolved, official_errors = await _resolve_officials(
+        db,
+        {
+            "referee_1": data.referee_1_id,
+            "referee_2": data.referee_2_id,
+            "match_referee": data.match_referee_id,
+        },
+        user_id,
+    )
+    errors += official_errors
     if errors:
         return None, "; ".join(errors)
 
     match = Match(**data.model_dump(), user_id=user_id)
+    _apply_official_names(match, resolved, changed_slots=set())
     db.add(match)
+    # The appointment rows are written before the commit, so a match and its
+    # appointments are saved together: a match that names an official it has no
+    # appointment for would be a half-written fixture.
+    await db.flush()
+    await sync_match_assignments(db, match, resolved, user_id=user_id)
+    if not commit:
+        return match, None
     await db.commit()
     await db.refresh(match)
 
@@ -193,8 +266,27 @@ async def update_match(db: AsyncSession, match_id: int, data: MatchUpdate, user_
         if error:
             return None, error
 
+    # The officials are resolved against the state the match will be in after
+    # the update, not against the request alone: a PATCH that only changes one
+    # slot still has to agree with the two it does not mention.
+    effective = _officials_from_match(match)
+    for slot, id_column, _, _ in OFFICIAL_SLOTS:
+        if id_column in update_data:
+            effective[slot] = update_data[id_column]
+
+    resolved, official_errors = await _resolve_officials(db, effective, user_id)
+    if official_errors:
+        return None, "; ".join(official_errors)
+
     for key, val in update_data.items():
         setattr(match, key, val)
+
+    changed_slots = {slot for slot, id_column, _, _ in OFFICIAL_SLOTS if id_column in update_data}
+    changed_names = {
+        name_column for _, _, name_column, _ in OFFICIAL_SLOTS if name_column in update_data
+    }
+    _apply_official_names(match, resolved, changed_slots, changed_names)
+    await sync_match_assignments(db, match, resolved, user_id=user_id)
 
     await db.commit()
     match = await get_match(db, match.id, user_id)
@@ -223,8 +315,23 @@ async def replace_match(db: AsyncSession, match_id: int, data: MatchCreate, user
     if error:
         return None, error
 
+    resolved, official_errors = await _resolve_officials(
+        db,
+        {
+            "referee_1": data.referee_1_id,
+            "referee_2": data.referee_2_id,
+            "match_referee": data.match_referee_id,
+        },
+        user_id,
+    )
+    if official_errors:
+        return None, "; ".join(official_errors)
+
     for key, val in data.model_dump().items():
         setattr(match, key, val)
+
+    _apply_official_names(match, resolved, changed_slots=set())
+    await sync_match_assignments(db, match, resolved, user_id=user_id)
 
     await db.commit()
     match = await get_match(db, match.id, user_id)
@@ -232,39 +339,55 @@ async def replace_match(db: AsyncSession, match_id: int, data: MatchCreate, user
 
 
 async def delete_match(db: AsyncSession, match_id: int, user_id: int):
-    """Delete a match together with everything derived from it.
+    """Delete a match together with everything derived from it."""
+    from sqlalchemy import text
 
-    The innings, the balls bowled and the batting order exist only because the
-    match does, so they go with it. They are removed explicitly rather than via
-    a relationship cascade because the scoring tables are a different module and
-    hold plain foreign keys with no relationship back to Match; a bare DELETE
-    would either fail at the database (Postgres) or silently leave orphan rows
-    that a later match can collide with (SQLite). A tournament fixture that
-    pointed at the match is unlinked instead of deleted, so the fixture falls
-    back to being a plan and stops counting towards the points table.
-    """
     from app.scoring.models import Delivery, InningsBatsman
     from app.tournaments.models import TournamentFixture
 
-    result = await db.execute(select(Match).where(Match.id == match_id, Match.user_id == user_id))
-    match = result.scalar_one_or_none()
-    if not match:
-        return False
+    try:
+        await db.execute(text("PRAGMA foreign_keys=OFF"))
+        result = await db.execute(
+            select(Match).where(Match.id == match_id, Match.user_id == user_id)
+        )
+        match = result.scalar_one_or_none()
+        if not match:
+            await db.execute(text("PRAGMA foreign_keys=ON"))
+            return False
 
-    innings_ids = list(
-        (await db.execute(select(Innings.id).where(Innings.match_id == match_id))).scalars().all()
-    )
-    if innings_ids:
-        await db.execute(delete(Delivery).where(Delivery.innings_id.in_(innings_ids)))
-        await db.execute(delete(InningsBatsman).where(InningsBatsman.innings_id.in_(innings_ids)))
-        await db.execute(delete(Innings).where(Innings.id.in_(innings_ids)))
+        # Unlink from any tournament fixture
+        await db.execute(
+            update(TournamentFixture)
+            .where(TournamentFixture.match_id == match_id)
+            .values(match_id=None)
+        )
 
-    await db.execute(
-        update(TournamentFixture)
-        .where(TournamentFixture.match_id == match_id)
-        .values(match_id=None)
-    )
+        innings_ids = list(
+            (await db.execute(select(Innings.id).where(Innings.match_id == match_id)))
+            .scalars()
+            .all()
+        )
+        if innings_ids:
+            # Wickets and extras are columns of the delivery row, so removing
+            # the deliveries is what removes them.
+            await db.execute(
+                delete(InningsBatsman).where(InningsBatsman.innings_id.in_(innings_ids))
+            )
+            await db.execute(delete(Delivery).where(Delivery.innings_id.in_(innings_ids)))
+            await db.execute(delete(Innings).where(Innings.id.in_(innings_ids)))
 
-    await db.delete(match)
-    await db.commit()
-    return True
+        await db.execute(
+            delete(MatchRefereeAssignment).where(MatchRefereeAssignment.match_id == match_id)
+        )
+
+        await db.execute(delete(Match).where(Match.id == match_id))
+        await db.commit()
+        await db.execute(text("PRAGMA foreign_keys=ON"))
+        return True
+    except Exception:
+        await db.rollback()
+        try:
+            await db.execute(text("PRAGMA foreign_keys=ON"))
+        except Exception:
+            pass
+        raise

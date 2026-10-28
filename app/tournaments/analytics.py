@@ -14,9 +14,16 @@ The two rules that need stating because a naive version gets them wrong:
 * net run rate credits a side bowled out with its full quota of overs, not the
   overs it actually faced. Without that rule a team skittled for 50 in ten overs
   would look worse than one that made the same score across twenty.
+
+A pure knockout competition has no league table at all. Its fixtures still
+produce a summary and leaderboards, so those views are computed from the same
+completed-match set rather than from the (deliberately empty) points table.
 """
 
 from __future__ import annotations
+
+from collections import defaultdict
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +36,7 @@ from app.scoring.engine import ScorecardDTO, ScoreEngine, ScoreEngineError
 from app.scoring.models import Innings
 from app.scoring.summary import derive_result
 from app.teams.models import Team
+from app.tournaments.enums import FixtureStage
 from app.tournaments.models import Tournament, TournamentFixture, TournamentTeam
 
 # A side bowled out is charged its full overs for net run rate. 10 is the only
@@ -133,6 +141,21 @@ def _fixture_outcome(
     return "result", winner_id
 
 
+async def match_winner_id(db: AsyncSession, match) -> int | None:
+    """The winner of a completed match, or ``None`` when it has none.
+
+    A tie, an abandoned chase and a match that is not completed all return
+    ``None``. Callers use that to refuse to advance a knockout team rather than
+    guessing which side should go through.
+    """
+    if match is None or match.status != MatchStatus.COMPLETED.value:
+        return None
+    innings = await _match_innings(db, match.id)
+    cards = await _scorecards(db, innings)
+    kind, winner_id = _fixture_outcome(innings, cards)
+    return winner_id if kind == "result" else None
+
+
 def _overs_credited(card: ScorecardDTO) -> float:
     if card.legal_balls <= 0:
         return 0.0
@@ -145,8 +168,25 @@ def _name(first: str | None, last: str | None, player_id: int) -> str:
     return full_name(first, last) or f"Player {player_id}"
 
 
+def _same_pair(fixture: TournamentFixture, match) -> bool:
+    return {fixture.team_a_id, fixture.team_b_id} == {match.team_a_id, match.team_b_id}
+
+
 async def build_points_table(db: AsyncSession, tournament: Tournament) -> list[dict]:
-    """The league standings, most points first, with net run rate as tie-break."""
+    """The league standings, most points first, with net run rate as tie-break.
+
+    A pure knockout tournament returns an empty list: a league table is not a
+    meaningful view of a bracket. A league-plus-knockout tournament counts only
+    its ``league`` stage fixtures, so a semi-final cannot change the positions
+    that decided who reached the semi-finals.
+
+    Each linked match is counted at most once. The same ``match_id`` on two
+    fixtures is a data error, not a second result, and a duplicate would
+    otherwise double a team's played/points totals.
+    """
+    if tournament.format == "knockout":
+        return []
+
     teams = await load_tournament_teams(db, tournament.id)
     fixtures = await load_fixtures(db, tournament.id)
 
@@ -171,12 +211,20 @@ async def build_points_table(db: AsyncSession, tournament: Tournament) -> list[d
         for team in teams
     }
 
+    counted_matches: set[int] = set()
     for fixture in fixtures:
         match = fixture.match
         if match is None or match.status != MatchStatus.COMPLETED.value:
             continue
+        if fixture.stage != FixtureStage.LEAGUE.value:
+            continue
         if fixture.team_a_id not in stats or fixture.team_b_id not in stats:
             continue
+        if not _same_pair(fixture, match):
+            continue
+        if match.id in counted_matches:
+            continue
+        counted_matches.add(match.id)
 
         innings = await _match_innings(db, match.id)
         cards = await _scorecards(db, innings)
@@ -256,18 +304,112 @@ async def build_points_table(db: AsyncSession, tournament: Tournament) -> list[d
 
 
 async def ranked_team_ids(db: AsyncSession, tournament: Tournament) -> list[int]:
-    """Team ids in points-table order, for seeding a knockout draw."""
-    return [row["team_id"] for row in await build_points_table(db, tournament)]
+    """Team ids in seeding order, for a knockout draw.
+
+    A league competition seeds from its points table. A pure knockout has no
+    table to seed from - its teams are listed in entry order, which is the only
+    order the organiser has actually expressed. Falling back to an empty table
+    here is what used to make a knockout draw impossible to regenerate.
+    """
+    teams = await load_tournament_teams(db, tournament.id)
+    entry_order = [team.id for team in teams]
+    if tournament.format == "knockout":
+        return entry_order
+    seeded = [row["team_id"] for row in await build_points_table(db, tournament)]
+    extra = [team_id for team_id in entry_order if team_id not in seeded]
+    return seeded + extra
+
+
+async def build_summary(db: AsyncSession, tournament: Tournament) -> dict:
+    """Fixtures and results at tournament scope, counted once per match.
+
+    The counts are *team results*: a decided match contributes one win and one
+    loss, a tie contributes two ties, and an abandoned match contributes two
+    no-results. ``wins + losses + ties + no_results`` therefore equals
+    ``2 * matches_played``, which keeps the four cards mutually consistent.
+    Only completed, linked, de-duplicated matches are eligible; an upcoming
+    fixture is a plan, not a result.
+    """
+    teams = await load_tournament_teams(db, tournament.id)
+    fixtures = await load_fixtures(db, tournament.id)
+    team_ids = {team.id for team in teams}
+
+    matches_played = 0
+    wins = 0
+    losses = 0
+    ties = 0
+    no_results = 0
+    champion_team_id: int | None = None
+    counted_matches: set[int] = set()
+
+    for fixture in fixtures:
+        match = fixture.match
+        if match is None or match.status != MatchStatus.COMPLETED.value:
+            continue
+        if match.id in counted_matches:
+            continue
+        if fixture.team_a_id not in team_ids or fixture.team_b_id not in team_ids:
+            continue
+        if not _same_pair(fixture, match):
+            continue
+        counted_matches.add(match.id)
+
+        innings = await _match_innings(db, match.id)
+        cards = await _scorecards(db, innings)
+        kind, winner_id = _fixture_outcome(innings, cards)
+        matches_played += 1
+        if kind == "no_result":
+            no_results += 2
+        elif winner_id is None:
+            ties += 2
+        else:
+            wins += 1
+            losses += 1
+            if fixture.stage == FixtureStage.FINAL.value:
+                champion_team_id = winner_id
+
+    champion_team_name = next((team.name for team in teams if team.id == champion_team_id), None)
+
+    applicable = tournament.format != "knockout"
+    if not applicable:
+        message = "Not applicable for knockout format."
+    elif matches_played == 0:
+        message = "No completed matches yet. Standings update when results are linked."
+    else:
+        message = None
+
+    return {
+        "tournament_id": tournament.id,
+        "tournament_name": tournament.name,
+        "format": tournament.format,
+        "status": tournament.status,
+        "team_count": len(teams),
+        "fixture_count": len(fixtures),
+        "matches_played": matches_played,
+        "wins": wins,
+        "losses": losses,
+        "ties": ties,
+        "no_results": no_results,
+        "champion_team_id": champion_team_id,
+        "champion_team_name": champion_team_name,
+        "points_table_empty": matches_played == 0,
+        "points_table_applicable": applicable,
+        "message": message,
+    }
 
 
 async def _completed_fixture_innings(
     db: AsyncSession, fixtures: list[TournamentFixture]
 ) -> list[tuple[TournamentFixture, list[Innings], dict[int, ScorecardDTO | None]]]:
     loaded = []
+    counted_matches: set[int] = set()
     for fixture in fixtures:
         match = fixture.match
         if match is None or match.status != MatchStatus.COMPLETED.value:
             continue
+        if match.id in counted_matches:
+            continue
+        counted_matches.add(match.id)
         innings = await _match_innings(db, match.id)
         loaded.append((fixture, innings, await _scorecards(db, innings)))
     return loaded
@@ -279,7 +421,8 @@ async def build_leaderboards(db: AsyncSession, tournament: Tournament, top: int 
     Performances are summed across every completed fixture, so an entry is a
     tournament aggregate rather than a single innings. Only normal (non Super
     Over) innings count, matching how the rest of the app reports batting and
-    bowling.
+    bowling. Each linked match is read once even if a data error points two
+    fixtures at it, so a player cannot appear twice for one innings.
     """
     teams = {team.id: team for team in await load_tournament_teams(db, tournament.id)}
     fixtures = await load_fixtures(db, tournament.id)
@@ -392,7 +535,124 @@ async def build_leaderboards(db: AsyncSession, tournament: Tournament, top: int 
     return {
         "top_run_scorers": batter_rows[:top],
         "top_wicket_takers": bowler_rows[:top],
+        "matches_considered": len(loaded),
     }
+
+
+async def sync_bracket_progression(
+    db: AsyncSession, tournament_id: int, *, commit: bool = False
+) -> bool:
+    """Fill each knockout slot from the winner of the fixture that feeds it.
+
+    The edge is ``(next_fixture_id, next_slot)`` on the earlier fixture. A
+    completed match with a decisive winner fills the slot; a tie, an abandoned
+    chase, an unfinished match or a missing match leaves/clears it, because no
+    team may be advanced without actually winning.
+
+    A downstream fixture that already has a linked match is never rewritten: its
+    participants belong to a result that has been recorded. Callers that change
+    an upstream result are expected to refuse such a change (see
+    :func:`app.tournaments.crud.set_fixture_result`), and this function leaves
+    the recorded match untouched if one slips through.
+
+    Returns whether anything changed. The caller commits; a read view that calls
+    this with ``commit=True`` does so to keep the bracket honest after a
+    scorecard edit.
+    """
+    fixtures = await load_fixtures(db, tournament_id)
+    by_id = {fixture.id: fixture for fixture in fixtures}
+    changed = False
+
+    for feeder in fixtures:
+        target_id = feeder.next_fixture_id
+        if target_id is None or feeder.next_slot not in {"a", "b"}:
+            continue
+        target = by_id.get(target_id)
+        if target is None:
+            continue
+
+        winner_id = await match_winner_id(db, feeder.match)
+        slot = f"team_{feeder.next_slot}_id"
+        current = getattr(target, slot)
+        if current == winner_id:
+            continue
+        if target.match_id is not None:
+            # A recorded result is not rewritten by a later edit upstream.
+            continue
+        other_slot = "team_b_id" if feeder.next_slot == "a" else "team_a_id"
+        if winner_id is not None and getattr(target, other_slot) == winner_id:
+            # The same team in both slots at once is never a valid bracket.
+            winner_id = None
+        setattr(target, slot, winner_id)
+        changed = True
+
+    if changed and commit:
+        await db.commit()
+    return changed
+
+
+async def sync_match_fixture_progression(db: AsyncSession, match) -> bool:
+    """Advance the bracket of a fixture-started match after it is completed.
+
+    A match is linked to its fixture when it is started, so completion can find
+    the tournament without guessing from team names or dates. A legacy match
+    that was never linked is deliberately ignored: linking one is an explicit
+    manual recovery action, not an automatic guess.
+
+    The write is idempotent. :func:`sync_bracket_progression` only writes a slot
+    whose value differs, and it never rewrites a downstream fixture that has
+    its own linked result.
+    """
+    row = (
+        await db.execute(
+            select(TournamentFixture.tournament_id).where(TournamentFixture.match_id == match.id)
+        )
+    ).first()
+    if row is None:
+        return False
+    return await sync_bracket_progression(db, row.tournament_id, commit=False)
+
+
+def _fixture_warnings(fixtures: list[TournamentFixture]) -> dict[int, list[str]]:
+    """Scheduling conflicts, keyed by fixture id.
+
+    Only a date *and* a time can clash; an undated fixture is a plan awaiting a
+    slot and is not reported. The check is deliberately a warning rather than a
+    rejection: a ground may host two games at once only if the organiser says so.
+    """
+    warnings: dict[int, list[str]] = defaultdict(list)
+    slots: dict[tuple[date, str], list[TournamentFixture]] = defaultdict(list)
+    for fixture in fixtures:
+        if fixture.scheduled_date is None or not fixture.scheduled_time:
+            continue
+        slots[(fixture.scheduled_date, fixture.scheduled_time)].append(fixture)
+
+    for group in slots.values():
+        if len(group) < 2:
+            continue
+        for fixture in group:
+            for other in group:
+                if other.id == fixture.id:
+                    continue
+                shares_team = bool(
+                    {fixture.team_a_id, fixture.team_b_id} & {other.team_a_id, other.team_b_id}
+                )
+                same_venue = (
+                    bool(fixture.venue)
+                    and bool(other.venue)
+                    and fixture.venue.strip().lower() == other.venue.strip().lower()
+                )
+                if shares_team:
+                    warnings[fixture.id].append(
+                        f"Team clash: a participating team also has fixture #{other.id} "
+                        "at this date and time."
+                    )
+                if same_venue:
+                    warnings[fixture.id].append(
+                        f"Venue clash: fixture #{other.id} uses the same venue at this date "
+                        "and time."
+                    )
+    return warnings
 
 
 async def fixture_public_rows(db: AsyncSession, tournament_id: int) -> list[dict]:
@@ -400,9 +660,14 @@ async def fixture_public_rows(db: AsyncSession, tournament_id: int) -> list[dict
 
     The match status and result are folded in so a schedule renders a completed
     fixture's score and winner without following the ``match_id`` itself. A
-    fixture with no match is ``"scheduled"``.
+    fixture with no match is ``"scheduled"``. A fixture whose participants are
+    still to be decided reports ``is_tbd`` and null team fields rather than a
+    guessed team. The bracket is reconciled first so a win recorded since the
+    last request is reflected in the next round.
     """
+    await sync_bracket_progression(db, tournament_id, commit=True)
     fixtures = await load_fixtures(db, tournament_id)
+    warnings = _fixture_warnings(fixtures)
     rows: list[dict] = []
     for fixture in fixtures:
         match = fixture.match
@@ -432,8 +697,16 @@ async def fixture_public_rows(db: AsyncSession, tournament_id: int) -> list[dict
                 "stage": fixture.stage,
                 "round_number": fixture.round_number,
                 "status": match.status if match is not None else "scheduled",
-                "result": match.result if match is not None else None,
+                "result": (
+                    match.result
+                    if match is not None and match.status == MatchStatus.COMPLETED.value
+                    else None
+                ),
                 "winner_team_id": winner_team_id,
+                "next_fixture_id": fixture.next_fixture_id,
+                "next_slot": fixture.next_slot,
+                "is_tbd": fixture.team_a_id is None or fixture.team_b_id is None,
+                "warnings": warnings.get(fixture.id, []),
             }
         )
     return rows
@@ -442,8 +715,12 @@ async def fixture_public_rows(db: AsyncSession, tournament_id: int) -> list[dict
 __all__ = [
     "build_leaderboards",
     "build_points_table",
+    "build_summary",
     "fixture_public_rows",
     "load_fixtures",
     "load_tournament_teams",
+    "match_winner_id",
     "ranked_team_ids",
+    "sync_bracket_progression",
+    "sync_match_fixture_progression",
 ]

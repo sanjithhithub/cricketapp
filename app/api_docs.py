@@ -135,24 +135,61 @@ PAGINATION_HEADERS: dict[str, Any] = {
 # four names appear both in the CORS middleware configuration and in the spec.
 PAGINATION_HEADER_NAMES = list(PAGINATION_HEADERS)
 
+# The page-numbered variant of the pagination headers.
+#
+# Some list endpoints take a page number rather than an offset, because a
+# client that shows "page 3 of 9" cannot work out the offset without doing the
+# arithmetic itself - and an arithmetic mistake shows the wrong rows rather
+# than an error. Those endpoints publish the page they served and how many
+# pages there are, alongside the offset headers, so a client can use whichever
+# it finds natural.
+PAGE_HEADERS: dict[str, Any] = {
+    "X-Page": {
+        "description": "The page number this response holds.",
+        "schema": {"type": "integer"},
+    },
+    "X-Page-Size": {
+        "description": "The number of rows a page holds.",
+        "schema": {"type": "integer"},
+    },
+    "X-Total-Pages": {
+        "description": "How many pages the whole result set is.",
+        "schema": {"type": "integer"},
+    },
+}
+
+PAGE_HEADER_NAMES = list(PAGE_HEADERS)
+
 
 def paginated_list_response(
-    description: str, extra: dict[str, Any] | None = None
+    description: str, extra: dict[str, Any] | None = None, *, paged: bool = False
 ) -> dict[str, Any]:
     """The ``responses=`` entry for a list endpoint.
 
     Merges the pagination headers into whatever else the route already declares,
-    so a list endpoint that can also fail gets both in one place.
+    so a list endpoint that can also fail gets both in one place. ``paged``
+    adds the page-number headers for the endpoints that take a page number.
     """
     response = dict(extra or {})
     ok = dict(response.get("200") or {})
     ok["description"] = description
-    ok["headers"] = {**PAGINATION_HEADERS, **(ok.get("headers") or {})}
+    headers = {**PAGINATION_HEADERS, **(ok.get("headers") or {})}
+    if paged:
+        headers = {**headers, **PAGE_HEADERS}
+    ok["headers"] = headers
     response["200"] = ok
     return response
 
 
-def set_pagination_headers(response: Response, *, total: int, skip: int, limit: int) -> None:
+def set_pagination_headers(
+    response: Response,
+    *,
+    total: int,
+    skip: int,
+    limit: int,
+    page: int | None = None,
+    page_size: int | None = None,
+) -> None:
     """Publish the page metadata on the response.
 
     Injected through the ``response: Response`` parameter rather than by building
@@ -163,6 +200,14 @@ def set_pagination_headers(response: Response, *, total: int, skip: int, limit: 
     response.headers["X-Has-More"] = "true" if skip + limit < total else "false"
     response.headers["X-Skip"] = str(skip)
     response.headers["X-Limit"] = str(limit)
+    if page is not None:
+        response.headers["X-Page"] = str(page)
+    if page_size is not None:
+        response.headers["X-Page-Size"] = str(page_size)
+    if page_size is not None and page_size > 0:
+        # A page count of zero would mean "no rows", which is not what an
+        # empty result is: an empty result is one empty page.
+        response.headers["X-Total-Pages"] = str(max(1, -(-total // page_size)))
 
 
 # Grouped in Swagger by first use. A declared block also means an operation
@@ -174,6 +219,24 @@ OPENAPI_TAGS: list[dict[str, Any]] = [
     {"name": "players", "description": "Player records, aliases, duplicates and squads."},
     {"name": "teams", "description": "Teams, squads, captaincy and squad membership."},
     {"name": "matches", "description": "Match fixtures and their result."},
+    {
+        "name": "referees",
+        "description": (
+            "Match officials: the people who umpire and referee a match, and "
+            "the slots they fill on it."
+        ),
+    },
+    {
+        "name": "team-owners",
+        "description": (
+            "The people who own the teams: the owners register, the stakes they "
+            "hold on a team, and the photos they are shown with. "
+            "`GET /v1/team-owners/me` reads the signed-in account's own profile "
+            "and `POST /v1/team-owners/me` is the profile-completion form that "
+            "creates it - signing in with Google does not make anyone an owner "
+            "by itself."
+        ),
+    },
     {"name": "scoring", "description": "Live scoring: innings, deliveries and scorecards."},
     {
         "name": "tournaments",

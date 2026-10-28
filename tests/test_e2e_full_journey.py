@@ -426,7 +426,22 @@ def test_full_journey(client, refs, headers):
     assert tl.status_code == 200
 
     ko = client.post(f"/v1/tournaments/{tid}/fixtures/knockout", json={"teams": 4}, headers=h)
-    assert ko.status_code == 200 and len(ko.json()) == 2
+    assert ko.status_code == 200, ko.text
+    bracket = ko.json()
+    assert len(bracket) == 3
+    assert {f["stage"] for f in bracket} == {"semifinal", "final"}
+    assert len([f for f in bracket if f["stage"] == "semifinal"]) == 2
+
+    summary = client.get(f"/v1/tournaments/{tid}/summary", headers=h)
+    assert summary.status_code == 200, summary.text
+    assert summary.json()["fixture_count"] == 9
+    assert summary.json()["matches_played"] == 1
+    assert summary.json()["wins"] == 1 and summary.json()["losses"] == 1
+    totals = summary.json()
+    assert (
+        totals["wins"] + totals["losses"] + totals["ties"] + totals["no_results"]
+        == 2 * totals["matches_played"]
+    )
 
     assert (
         client.patch(

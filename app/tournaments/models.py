@@ -82,14 +82,21 @@ class TournamentFixture(Base):
     ``match_id`` is the only link to scored data and stays ``None`` until a real
     match is attached, which is what separates a fixture on the schedule from one
     that counts towards the points table.
+
+    A knockout bracket is a graph rather than a flat list: a semi-final's winner
+    fills one slot of the final. ``next_fixture_id`` and ``next_slot`` record that
+    edge, and a fixture whose participants are not known yet (the final before
+    the semi-finals are played) stores ``None`` in ``team_a_id``/``team_b_id``
+    instead of guessing a team. ``next_slot`` is ``"a"`` or ``"b"``.
     """
 
     __tablename__ = "tournament_fixtures"
+    __table_args__ = (UniqueConstraint("match_id", name="uq_tournament_fixtures_match"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     tournament_id: Mapped[int] = mapped_column(ForeignKey("tournaments.id"), index=True)
-    team_a_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
-    team_b_id: Mapped[int] = mapped_column(ForeignKey("teams.id"))
+    team_a_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
+    team_b_id: Mapped[int | None] = mapped_column(ForeignKey("teams.id"), nullable=True)
     match_id: Mapped[int | None] = mapped_column(ForeignKey("matches.id"), nullable=True)
 
     scheduled_date: Mapped[date | None] = mapped_column(nullable=True)
@@ -98,7 +105,16 @@ class TournamentFixture(Base):
     stage: Mapped[str] = mapped_column(String(20), default="league")
     round_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
+    # The bracket edge: this fixture's winner fills ``next_slot`` of the fixture
+    # ``next_fixture_id``. Both stay ``None`` outside a generated knockout draw.
+    next_fixture_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tournament_fixtures.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    next_slot: Mapped[str | None] = mapped_column(String(1), nullable=True)
+
     tournament: Mapped[Tournament] = relationship(back_populates="fixtures")
-    team_a: Mapped[Team] = relationship(foreign_keys=[team_a_id])
-    team_b: Mapped[Team] = relationship(foreign_keys=[team_b_id])
+    team_a: Mapped[Team | None] = relationship(foreign_keys=[team_a_id])
+    team_b: Mapped[Team | None] = relationship(foreign_keys=[team_b_id])
     match: Mapped[Match | None] = relationship()

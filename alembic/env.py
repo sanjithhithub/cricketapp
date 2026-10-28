@@ -26,7 +26,15 @@ sync_url = re.sub(r"\+asyncpg", "+psycopg2", db_url)
 sync_url = re.sub(r"\+aiosqlite", "", sync_url)
 config.set_main_option("sqlalchemy.url", sync_url)
 
+import app.auth.models  # noqa: F401
+import app.levels.models  # noqa: F401
+import app.matches.models  # noqa: F401
+import app.models  # noqa: F401
+import app.players.models  # noqa: F401
+import app.referees.models  # noqa: F401
 import app.scoring.models  # noqa: F401
+import app.team_owners.models  # noqa: F401
+import app.teams.models  # noqa: F401
 import app.tournaments.models  # noqa: F401
 from app.database import Base
 

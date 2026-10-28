@@ -150,6 +150,9 @@ class _User:
         self.is_verified = kwargs.pop("is_verified", False)
         self.is_active = kwargs.pop("is_active", True)
         self.hashed_password = kwargs.pop("hashed_password", None)
+        # The Google account's own identifier. Empty for an account that has
+        # only ever signed in with a password.
+        self.google_sub = kwargs.pop("google_sub", None)
         for key, value in kwargs.items():
             setattr(self, key, value)
 
@@ -160,14 +163,24 @@ async def _run(profile, existing):
     async def get_user_by_email(_db, email):
         return existing
 
+    async def get_user_by_google_sub(_db, subject):
+        # The fake table holds exactly one row, so the lookup only finds it if
+        # that row is the identity being looked for.
+        if existing.google_sub and existing.google_sub == subject:
+            return existing
+        return None
+
     crud.get_user_by_email = get_user_by_email
+    crud.get_user_by_google_sub = get_user_by_google_sub
     try:
         return await crud.login_or_create_google_user(db, profile)
     finally:
         crud.get_user_by_email = _original
+        crud.get_user_by_google_sub = _original_sub
 
 
 _original = crud.get_user_by_email
+_original_sub = crud.get_user_by_google_sub
 
 
 def test_google_links_existing_password_account():
@@ -180,6 +193,7 @@ def test_google_links_existing_password_account():
     )
     profile = {
         "email": "user@test.com",
+        "sub": "google-sub-links-password",
         "full_name": "Real Name",
         "profile_picture": "http://img",
         "email_verified": True,
@@ -190,6 +204,9 @@ def test_google_links_existing_password_account():
     assert user.auth_provider == "google"
     assert user.is_verified is True
     assert user.full_name == "Real Name"
+    # The Google identity is now linked, so a later sign-in is matched on it
+    # rather than on an address the person could change.
+    assert user.google_sub == "google-sub-links-password"
     # Password login must keep working for the linked account.
     assert user.hashed_password == "hashed"
 
@@ -205,6 +222,7 @@ def test_google_does_not_overwrite_user_edited_fields():
     )
     profile = {
         "email": "user@test.com",
+        "sub": "google-sub-keeps-fields",
         "full_name": "Google Name",
         "profile_picture": "http://google",
         "email_verified": True,
@@ -218,7 +236,7 @@ def test_google_does_not_overwrite_user_edited_fields():
 
 def test_deactivated_account_is_refused():
     existing = _User(id=9, email="u@test.com", is_active=False)
-    profile = {"email": "u@test.com", "email_verified": True}
+    profile = {"email": "u@test.com", "sub": "google-sub-deactivated", "email_verified": True}
 
     with pytest.raises(Exception) as exc:
         asyncio.run(_run(profile, existing))
