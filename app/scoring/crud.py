@@ -635,6 +635,13 @@ async def set_match_completed(db: AsyncSession, match: Match):
     match.status = MatchStatus.COMPLETED.value
     match.result = await _compute_match_result(db, match)
     await db.commit()
+    try:
+        from app.tournaments.analytics import sync_match_fixture_progression
+
+        await sync_match_fixture_progression(db, match)
+        await db.commit()
+    except Exception:
+        await db.rollback()
 
 
 async def sync_match_result(db: AsyncSession, match: Match) -> str | None:

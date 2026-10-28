@@ -26,6 +26,15 @@ load_dotenv()
 logger = logging.getLogger("app.auth")
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
+# How far this machine's clock may differ from Google's before an ID token is
+# rejected as "issued in the future". Google stamps `iat` with its own clock, so
+# a machine whose clock has drifted (or was never synced) otherwise refuses
+# every perfectly valid token and sign-in fails with "Invalid Google ID token".
+# 60s is the conventional allowance. It does not weaken the checks that matter:
+# the signature is still verified against Google's certificates and the audience
+# still has to match GOOGLE_CLIENT_ID. It only forgives a timestamp that is a
+# little off.
+GOOGLE_CLOCK_SKEW_SECONDS = int(os.getenv("GOOGLE_CLOCK_SKEW_SECONDS", "60"))
 OTP_EXPIRE_MINUTES = int(os.getenv("OTP_EXPIRE_MINUTES", "5"))
 
 
@@ -385,9 +394,23 @@ async def verify_google_id_token(id_token: str) -> dict:
 
     try:
         info = google_id_token.verify_oauth2_token(
-            id_token, google_requests.Request(), GOOGLE_CLIENT_ID
+            id_token,
+            google_requests.Request(),
+            GOOGLE_CLIENT_ID,
+            clock_skew_in_seconds=GOOGLE_CLOCK_SKEW_SECONDS,
         )
-    except Exception:
+    except Exception as exc:
+        # google-auth rejects a token whose `iat` is in the future relative to
+        # this machine's clock. That is our clock being wrong, not the user
+        # presenting a bad token, so the two need different answers: the
+        # generic 401 sends people hunting for a token problem that does not
+        # exist, and the client cannot fix the clock either.
+        if "used too early" in str(exc):
+            logger.error("Google ID token rejected by clock skew: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Server clock is out of sync, so Google sign-in is temporarily unavailable. Please try again.",
+            )
         logger.exception("Google ID token verification failed")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -401,34 +424,99 @@ async def verify_google_id_token(id_token: str) -> dict:
             detail="Google account has no email",
         )
 
+    # The `sub` claim is Google's own identifier for the account behind the
+    # token: stable for the life of the Google account, unlike the email
+    # address, and impossible for the client to forge because the token's
+    # signature has just been checked against Google's public keys. It is
+    # what a Google sign-in is matched on.
+    subject = (info.get("sub") or "").strip()
+
     return {
         "email": email,
+        "sub": subject,
         "full_name": info.get("name"),
         "profile_picture": info.get("picture"),
         "email_verified": info.get("email_verified", False),
     }
 
 
+async def get_user_by_google_sub(db: AsyncSession, subject: str) -> User | None:
+    """The account a Google identity is already linked to, if there is one."""
+    if not subject:
+        return None
+    result = await db.execute(select(User).where(User.google_sub == subject))
+    return result.scalar_one_or_none()
+
+
 async def login_or_create_google_user(db: AsyncSession, profile: dict) -> User:
     """Sign in with Google, creating the account on first use.
 
-    When the email already belongs to a password account we link the account
-    rather than rejecting the sign-in. Google has just cryptographically
-    verified ownership of the address (see verify_google_id_token, which
-    checks audience and signature), so possession of this Google identity is
-    proof of control of the mailbox - the same level of assurance the password
-    reset flow relies on. Requiring the user to also know the password blocked
-    legitimate users who had signed up with a password first.
+    The account is found in this order:
+
+    1. by the Google account's own identifier (``sub``), which the token
+       verification has already proved is genuine. This is the link that
+       cannot be taken over, because it does not depend on an email address
+       the person can change.
+    2. by the email address, for an account that has never signed in with
+       Google before. Google has just cryptographically verified ownership of
+       the address (see verify_google_id_token, which checks audience and
+       signature), so possession of this Google identity is proof of control
+       of the mailbox - the same level of assurance the password reset flow
+       relies on. Requiring the user to also know the password blocked
+       legitimate users who had signed up with a password first.
+    3. otherwise, a new account is created.
+
+    An account that is already linked to a *different* Google identity is
+    never re-linked: the address may since have been handed to somebody else,
+    and silently taking the account over would be the wrong answer to that.
 
     hashed_password is deliberately preserved so password login keeps working
     for the account, and a stale/inactive flag is corrected while we are here.
     """
     email = profile["email"]
+    subject = (profile.get("sub") or "").strip()
+
+    # 1. The Google identity itself.
+    if subject:
+        linked = await get_user_by_google_sub(db, subject)
+        if linked:
+            if linked.email != email and profile.get("email_verified"):
+                # The address on the token has changed, or the token belongs to
+                # an account we have seen before under a different address.
+                # The identity is the same person either way, so the address
+                # follows it - but only when Google says the address is
+                # verified, and only when no other account holds it.
+                holder = await get_user_by_email(db, email)
+                if holder is None or holder.id == linked.id:
+                    linked.email = email
+            if not linked.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This account has been deactivated.",
+                )
+            await db.commit()
+            await db.refresh(linked)
+            return linked
+
+    # 2. The address, for an account that has not signed in with Google yet.
     user = await get_user_by_email(db, email)
     if user:
+        if user.google_sub and subject and user.google_sub != subject:
+            # This address is already linked to another Google account. The
+            # address may have been handed on since, so the sign-in is
+            # refused rather than allowed to take the account over.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "This email address is already linked to a different Google "
+                    "account. Sign in with the account it was linked to."
+                ),
+            )
         if user.auth_provider != "google":
             user.auth_provider = "google"
             logger.info("Linked Google identity to existing account %s", user.id)
+        if subject:
+            user.google_sub = subject
         # Google is an authoritative source for both of these, so fill in only
         # blanks and never overwrite a value the user may have set themselves.
         if not user.full_name and profile.get("full_name"):
@@ -446,12 +534,14 @@ async def login_or_create_google_user(db: AsyncSession, profile: dict) -> User:
         await db.refresh(user)
         return user
 
+    # 3. A new account.
     user = User(
         email=email,
         hashed_password=None,
         full_name=profile.get("full_name"),
         profile_picture=profile.get("profile_picture"),
         auth_provider="google",
+        google_sub=subject or None,
         is_verified=bool(profile.get("email_verified")),
     )
     db.add(user)

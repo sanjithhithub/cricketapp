@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from app.levels.models import TeamLevel
     from app.models import City, Country, State
     from app.players.models import Player
+    from app.team_owners.models import TeamOwnership
 
 
 class PlayerTeamAssignment(Base):
@@ -63,7 +64,26 @@ class Team(Base):
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
 
     level: Mapped[TeamLevel] = relationship(back_populates="teams")
-    assignments: Mapped[list[PlayerTeamAssignment]] = relationship(back_populates="team")
+    # cascade="all, delete-orphan" is required, not optional: team_id is part of
+    # the composite primary key on player_team_assignments, so SQLAlchemy cannot
+    # blank it out the way it nulls a plain foreign key. Without the cascade a
+    # delete of a team that has a squad fails with "Dependency rule on column
+    # 'teams.id' tried to blank-out primary key column". The orphan rule removes
+    # the *association* rows when the team goes away - it never deletes the
+    # players themselves, whose rows live in the players table and stay intact.
+    assignments: Mapped[list[PlayerTeamAssignment]] = relationship(
+        back_populates="team", cascade="all, delete-orphan"
+    )
+    # The owners of this team, and the terms of each stake. A team may have
+    # more than one owner, so the link is a table of its own rather than a
+    # column.
+    #
+    # The cascade is on the *link*, not on the owners: deleting a team removes
+    # the ownership rows that only existed because of it, and never the owners
+    # themselves, whose rows live in the team_owners table and stay intact.
+    ownerships: Mapped[list[TeamOwnership]] = relationship(
+        back_populates="team", cascade="all, delete-orphan"
+    )
     country: Mapped[Country] = relationship()
     state: Mapped[State] = relationship()
     city: Mapped[City] = relationship()

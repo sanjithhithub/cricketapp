@@ -3,6 +3,7 @@ from datetime import date
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.enums import MatchStatus, MatchType, TossDecision, coerce_enum
+from app.referees.schemas import MatchOfficials
 
 
 class MatchBase(BaseModel):
@@ -18,6 +19,17 @@ class MatchBase(BaseModel):
     team_b_id: int
     toss_winner_id: int
     toss_decision: TossDecision
+    # The three official slots. An id links a registered match official; the
+    # name beside it is a display mirror, kept for accounts that name their
+    # officials in plain text. An official must belong to this account, and the
+    # same official cannot fill two slots of one match.
+    referee_1_id: int | None = Field(
+        None, description="The referee standing in the first umpire's slot."
+    )
+    referee_2_id: int | None = Field(
+        None, description="The referee standing in the second umpire's slot."
+    )
+    match_referee_id: int | None = Field(None, description="The referee in charge of the match.")
     referee_1_name: str | None = Field(None, max_length=100)
     referee_2_name: str | None = Field(None, max_length=100)
     match_referee_name: str | None = Field(None, max_length=100)
@@ -42,11 +54,6 @@ class MatchBase(BaseModel):
     super_over_enabled: bool = False
     super_over_repeat: bool = True
 
-    @field_validator("match_type", mode="before")
-    @classmethod
-    def validate_match_type(cls, v):
-        return coerce_enum(MatchType, v)
-
     @field_validator("toss_decision", mode="before")
     @classmethod
     def validate_toss_decision(cls, v):
@@ -54,7 +61,10 @@ class MatchBase(BaseModel):
 
 
 class MatchCreate(MatchBase):
-    pass
+    @field_validator("match_type", mode="before")
+    @classmethod
+    def validate_match_type(cls, v):
+        return coerce_enum(MatchType, v)
 
 
 class MatchUpdate(BaseModel):
@@ -67,6 +77,13 @@ class MatchUpdate(BaseModel):
     team_b_id: int | None = None
     toss_winner_id: int | None = None
     toss_decision: TossDecision | None = None
+    referee_1_id: int | None = Field(
+        None, description="The referee standing in the first umpire's slot."
+    )
+    referee_2_id: int | None = Field(
+        None, description="The referee standing in the second umpire's slot."
+    )
+    match_referee_id: int | None = Field(None, description="The referee in charge of the match.")
     referee_1_name: str | None = Field(None, max_length=100)
     referee_2_name: str | None = Field(None, max_length=100)
     match_referee_name: str | None = Field(None, max_length=100)
@@ -105,7 +122,28 @@ class MatchTeamInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class MatchTournamentInfo(BaseModel):
+    """The competition a match belongs to, when it was played as a fixture.
+
+    A match is part of a tournament only if a fixture links to it via
+    ``TournamentFixture.match_id``. Standalone matches (created directly from
+    the Create Match form) have no tournament, so this stays ``None``.
+    """
+
+    id: int
+    name: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class MatchResponse(MatchBase):
+    # Responses echo the stored value rather than re-validating it against the
+    # set accepted on input. Older rows may carry a format this build no longer
+    # offers (for example "limited_overs"); refusing to serialise one of them
+    # used to fail the whole match list with a 500, hiding every other match.
+    # Input is still closed: MatchCreate and MatchUpdate validate match_type.
+    match_type: str
+
     id: int
     status: MatchStatus = MatchStatus.SCHEDULED
     current_innings_number: int = 0
@@ -113,5 +151,12 @@ class MatchResponse(MatchBase):
     team_b: MatchTeamInfo
     toss_winner: MatchTeamInfo
     player_of_match_id: int | None = None
+    # The competition this match belongs to, if any. Populated when a tournament
+    # fixture links to this match; ``None`` for a standalone match.
+    tournament: MatchTournamentInfo | None = None
+    # The officials panel: the three slots, each carrying the official's
+    # details when one is linked. Always present, so a client renders the
+    # panel without checking for a missing key.
+    officials: MatchOfficials = MatchOfficials()
 
     model_config = ConfigDict(from_attributes=True)

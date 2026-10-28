@@ -11,6 +11,7 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.enums import MatchType, TossDecision
 from app.tournaments.enums import FixtureStage, TournamentFormat, TournamentStatus
 
 
@@ -40,6 +41,25 @@ class TournamentUpdate(BaseModel):
     points_tie: int | None = Field(None, ge=0)
     points_loss: int | None = Field(None, ge=0)
     points_no_result: int | None = Field(None, ge=0)
+
+
+class TournamentSummaryResponse(BaseModel):
+    tournament_id: int
+    tournament_name: str
+    format: str
+    status: str
+    team_count: int
+    fixture_count: int
+    matches_played: int
+    wins: int
+    losses: int
+    ties: int
+    no_results: int
+    champion_team_id: int | None = None
+    champion_team_name: str | None = None
+    points_table_empty: bool = False
+    points_table_applicable: bool = True
+    message: str | None = None
 
 
 class TournamentResponse(BaseModel):
@@ -79,8 +99,8 @@ class TournamentTeamList(BaseModel):
 
 
 class FixtureCreate(BaseModel):
-    team_a_id: int
-    team_b_id: int
+    team_a_id: int | None = None
+    team_b_id: int | None = None
     scheduled_date: date | None = None
     scheduled_time: str | None = Field(None, max_length=10)
     venue: str | None = Field(None, max_length=200)
@@ -101,10 +121,10 @@ class FixtureUpdate(BaseModel):
 class FixtureResponse(BaseModel):
     id: int
     tournament_id: int
-    team_a_id: int
+    team_a_id: int | None = None
     team_a_name: str | None = None
     team_a_short_name: str | None = None
-    team_b_id: int
+    team_b_id: int | None = None
     team_b_name: str | None = None
     team_b_short_name: str | None = None
     match_id: int | None = None
@@ -116,6 +136,10 @@ class FixtureResponse(BaseModel):
     status: str = "scheduled"
     result: str | None = None
     winner_team_id: int | None = None
+    next_fixture_id: int | None = None
+    next_slot: str | None = None
+    is_tbd: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 class FixtureGenerate(BaseModel):
@@ -124,14 +148,53 @@ class FixtureGenerate(BaseModel):
         False,
         description="Delete the existing schedule first. Refused if a fixture already has a match.",
     )
+    confirm: bool = Field(
+        False,
+        description="Explicit confirmation required when replacing a schedule that has started or completed fixtures.",
+    )
 
 
 class FixtureResult(BaseModel):
     match_id: int
 
 
+class FixtureMatchStart(BaseModel):
+    """The toss and match settings needed to open a fixture's scoreable match.
+
+    Teams always come from the fixture, never from the request: accepting a pair
+    here would let a caller start a match between two sides this fixture does
+    not contain. Date, time and venue fall back to the fixture when present, so
+    a scheduled fixture needs only the toss.
+    """
+
+    toss_winner_id: int
+    toss_decision: TossDecision
+    match_type: MatchType = MatchType.T20
+    match_date: date | None = None
+    match_time: str | None = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$", max_length=5)
+    venue: str | None = Field(None, max_length=200)
+    total_overs: int | None = Field(None, ge=1, le=200)
+    super_over_enabled: bool = False
+    super_over_repeat: bool = True
+
+
+class FixtureMatchResponse(BaseModel):
+    fixture_id: int
+    match_id: int
+    created: bool
+    match_status: str
+
+
 class KnockoutGenerate(BaseModel):
-    teams: int = Field(4, description="How many of the top seeds enter the draw: 2, 4 or 8")
+    teams: int = Field(
+        4,
+        ge=2,
+        le=8,
+        description=(
+            "How many of the top seeds enter the draw. Counts that are not a "
+            "power of two receive byes in a larger bracket."
+        ),
+    )
 
 
 class PointsTableRow(BaseModel):
@@ -160,6 +223,8 @@ class PointsTableResponse(BaseModel):
     format: str
     status: str
     table: list[PointsTableRow]
+    applicable: bool = True
+    message: str | None = None
 
 
 class TournamentBatterStat(BaseModel):
@@ -198,3 +263,4 @@ class TournamentLeaderboardResponse(BaseModel):
     tournament_name: str
     top_run_scorers: list[TournamentBatterStat]
     top_wicket_takers: list[TournamentBowlerStat]
+    matches_considered: int = 0

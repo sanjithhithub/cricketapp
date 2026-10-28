@@ -245,6 +245,16 @@ class PlayerResponse(PlayerBase):
     # an admin or to the user who owns the record (see the routes).
     phone_display: str | None = None
 
+    @field_validator("mobile_number", mode="before")
+    @classmethod
+    def validate_mobile_number(cls, v):
+        # Overridden deliberately. A response carries the number as it is: the
+        # full one for an admin or the account that owns the record, the masked
+        # one for everyone else. Re-normalising it here would strip the
+        # asterisks out of a masked number and leave the digits on show - the
+        # mask would be undone by the very schema meant to apply it.
+        return v
+
     model_config = ConfigDict(from_attributes=True)
 
 

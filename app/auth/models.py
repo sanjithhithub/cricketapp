@@ -19,6 +19,18 @@ class User(Base):
     mobile_number: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     auth_provider: Mapped[str] = mapped_column(String(20), default="email")
     role: Mapped[str] = mapped_column(String(20), default="admin")
+    # The Google account's own identifier - the `sub` claim of a verified ID
+    # token. Stable for the life of the Google account, unlike the email
+    # address, which the person can change.
+    #
+    # It is the primary way a Google sign-in is matched to an account: the
+    # token's signature has already been checked against Google's public keys
+    # and its audience against this application's client id, so this value is
+    # one the client cannot forge. The email is only ever used to link an
+    # account that has never signed in with Google before.
+    google_sub: Mapped[str | None] = mapped_column(
+        String(255), unique=True, index=True, nullable=True
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

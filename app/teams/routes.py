@@ -19,11 +19,30 @@ from app.players.crud import (
     get_available_players_for_team,
 )
 from app.players.schemas import PlayerDropdownItem, TeamPlayerByPhone
+from app.team_owners.crud import (
+    DuplicateActiveOwnershipError,
+    OwnershipError,
+    OwnershipPercentageError,
+    assign_owner_to_team,
+    end_team_ownership,
+    get_team_owner,
+    get_team_ownerships,
+    stake_response,
+    update_team_ownership,
+)
+from app.team_owners.schemas import (
+    TeamOwnerAssignRequest,
+    TeamOwnerRelationshipUpdate,
+    TeamOwnershipInput,
+    TeamOwnershipResponse,
+)
 from app.teams.analytics import get_head_to_head_analytics, get_team_analytics
 from app.teams.crud import (
     create_team,
     delete_team,
+    get_captain_eligible_players,
     get_team,
+    get_team_captaincy,
     get_team_detail,
     get_team_options,
     get_team_squad,
@@ -37,6 +56,8 @@ from app.teams.schemas import (
     PlayerBulkAssignResponse,
     TeamAnalyticsResponse,
     TeamBulkPlayerAdd,
+    TeamCaptainEligibleResponse,
+    TeamCaptainResponse,
     TeamCaptainsResponse,
     TeamCaptainsSet,
     TeamCreate,
@@ -210,10 +231,58 @@ async def get_head_to_head_endpoint(
     return HeadToHeadAnalyticsResponse.model_validate(payload)
 
 
+@router.get(
+    "/teams/{team_id}/captain",
+    response_model=TeamCaptainResponse,
+    responses={"404": NOT_FOUND},
+    summary="Read the team's current captain",
+    description=(
+        "Both titles come back as full squad rows, or `null` when that title is "
+        "unset. A team that has named nobody answers **200** with "
+        "`captain: null` - an absent captain is a state, not a failure. Only an "
+        "unknown team, or one owned by another account, is a 404."
+    ),
+)
+async def get_team_captain_endpoint(
+    team_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Ownership is resolved first so a team this account does not own is a 404
+    # rather than a 200 that leaks the other side's squad.
+    if await get_team(db, team_id, current_user.id) is None:
+        raise HTTPException(404, "Team not found")
+    captain, vice = await get_team_captaincy(db, team_id)
+    return TeamCaptainResponse(team_id=team_id, captain=captain, vice_captain=vice)
+
+
+@router.get(
+    "/teams/{team_id}/captain/eligible-players",
+    response_model=TeamCaptainEligibleResponse,
+    responses={"404": NOT_FOUND},
+    summary="List the players this team may name as captain",
+    description=(
+        "The team's own playing XI, as squad rows, ordered by player id. "
+        "Substitutes and bench players are left out because the captaincy rules "
+        "require both titles to sit in the XI. `players` is an empty list when "
+        "the team has no XI yet."
+    ),
+)
+async def get_team_captain_eligible_players_endpoint(
+    team_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    players = await get_captain_eligible_players(db, team_id, current_user.id)
+    if players is None:
+        raise HTTPException(404, "Team not found")
+    return TeamCaptainEligibleResponse(team_id=team_id, players=players)
+
+
 @router.put(
     "/teams/{team_id}/captains",
     response_model=TeamCaptainsResponse,
-    responses={"400": BAD_REQUEST},
+    responses={"400": BAD_REQUEST, "404": NOT_FOUND, "409": CONFLICT},
     summary="Name or clear the captaincy",
     description=(
         "Both ids are optional in the request: sending `null` for one clears that "
@@ -236,13 +305,23 @@ async def set_team_captains_endpoint(
     if await get_team(db, team_id, current_user.id) is None:
         raise HTTPException(404, "Team not found")
 
-    captains, message = await set_team_captains(
-        db,
-        team_id,
-        data.captain_player_id,
-        data.vice_captain_player_id,
-        current_user.id,
-    )
+    try:
+        captains, message = await set_team_captains(
+            db,
+            team_id,
+            data.captain_player_id,
+            data.vice_captain_player_id,
+            current_user.id,
+        )
+    except IntegrityError as exc:
+        # The write is a clear-then-set on one team's rows; a failure here means
+        # the transaction was already unwound at the database, so rolling back
+        # before answering leaves no half-applied captaincy behind. The session
+        # is not reusable after this without the rollback, hence it.
+        await db.rollback()
+        raise HTTPException(
+            409, "The captaincy could not be saved. Reload the team and try again."
+        ) from exc
     if captains is None:
         raise HTTPException(400, message)
     captain_id, vice_id = captains
@@ -305,8 +384,153 @@ async def delete_team_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     deleted = await delete_team(db, team_id, current_user.id)
-    if not deleted:
+    if deleted is None:
         raise HTTPException(404, "Team not found")
+    if deleted is False:
+        raise HTTPException(
+            409,
+            "This team has played matches or is entered in a tournament, so its "
+            "scorecards and statistics must be kept. Remove it from the "
+            "tournament first; its players stay available after the team goes.",
+        )
+
+
+@router.get(
+    "/teams/{team_id}/owners",
+    response_model=list[TeamOwnershipResponse],
+    summary="List the owners of a team",
+    responses={"404": NOT_FOUND},
+)
+async def list_team_owners_endpoint(
+    team_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The owners of one team, and the terms of each stake.
+
+    The live stakes come first, then the historical ones. The owner records
+    themselves live in the owners register and are not copied here.
+    """
+    team = await get_team(db, team_id, current_user.id)
+    if not team:
+        raise HTTPException(404, "Team not found")
+    stakes = await get_team_ownerships(db, team_id, current_user.id)
+    return [stake_response(stake) for stake in stakes]
+
+
+@router.post(
+    "/teams/{team_id}/owners",
+    status_code=201,
+    response_model=TeamOwnershipResponse,
+    summary="Give an owner a stake in a team",
+    responses={"400": BAD_REQUEST, "404": NOT_FOUND, "409": CONFLICT},
+)
+async def assign_team_owner_endpoint(
+    team_id: int,
+    data: TeamOwnerAssignRequest,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Give an owner a stake in this team.
+
+    The rules the server checks: the owner may not hold the same team twice
+    at the same time, and the live stakes of the team may not add up to more
+    than a hundred percent. They are not required to add up to a hundred: a
+    club that does not split its equity does not have to pretend to.
+
+    An owner who already holds this team is refused with a 409 rather than
+    given a second stake; changing the terms of the stake they hold is
+    `PATCH /teams/{team_id}/owners/{owner_id}`.
+    """
+    team = await get_team(db, team_id, current_user.id)
+    if not team:
+        raise HTTPException(404, "Team not found")
+    owner = await get_team_owner(db, data.owner_id, current_user.id)
+    if not owner:
+        raise HTTPException(404, "Team owner not found")
+
+    payload = TeamOwnershipInput(
+        team_id=team_id,
+        ownership_type=data.ownership_type,
+        ownership_percentage=data.ownership_percentage,
+        ownership_start_date=data.ownership_start_date,
+        ownership_end_date=data.ownership_end_date,
+        ownership_status=data.ownership_status,
+    )
+    try:
+        stake = await assign_owner_to_team(db, team, owner, payload, current_user.id)
+    except DuplicateActiveOwnershipError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OwnershipPercentageError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    except OwnershipError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    return stake_response(stake)
+
+
+@router.patch(
+    "/teams/{team_id}/owners/{owner_id}",
+    response_model=TeamOwnershipResponse,
+    summary="Change the terms of an owner's stake",
+    responses={"400": BAD_REQUEST, "404": NOT_FOUND, "409": CONFLICT},
+)
+async def update_team_owner_stake_endpoint(
+    team_id: int,
+    owner_id: int,
+    data: TeamOwnerRelationshipUpdate,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Change the terms of the stake one owner holds on this team."""
+    team = await get_team(db, team_id, current_user.id)
+    if not team:
+        raise HTTPException(404, "Team not found")
+    if not await get_team_owner(db, owner_id, current_user.id):
+        raise HTTPException(404, "Team owner not found")
+
+    payload = TeamOwnershipInput(
+        team_id=team_id,
+        ownership_type=data.ownership_type,
+        ownership_percentage=data.ownership_percentage,
+        ownership_start_date=data.ownership_start_date,
+        ownership_end_date=data.ownership_end_date,
+        ownership_status=data.ownership_status,
+    )
+    try:
+        stake = await update_team_ownership(db, team, owner_id, payload, current_user.id)
+    except DuplicateActiveOwnershipError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except OwnershipPercentageError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    except OwnershipError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    return stake_response(stake)
+
+
+@router.delete(
+    "/teams/{team_id}/owners/{owner_id}",
+    status_code=204,
+    summary="End an owner's stake in a team",
+    responses={"404": NOT_FOUND},
+)
+async def end_team_owner_stake_endpoint(
+    team_id: int,
+    owner_id: int,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """End the stake one owner holds on this team.
+
+    The stake is not deleted. It is marked inactive and given an end date, so
+    the club's history keeps the record of who ran it and when they stopped.
+    A later stake on the same team is a new row, not this one reopened.
+    """
+    team = await get_team(db, team_id, current_user.id)
+    if not team:
+        raise HTTPException(404, "Team not found")
+    ended = await end_team_ownership(db, team, owner_id, current_user.id)
+    if not ended:
+        raise HTTPException(404, "This owner does not hold this team")
 
 
 @router.post(

@@ -4,6 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.enums import SquadRole, coerce_enum
 from app.players.schemas import PlayerTeamInfo
+from app.team_owners.schemas import TeamOwnerOnTeam
 
 
 class TeamBase(BaseModel):
@@ -204,6 +205,42 @@ class TeamCaptainsResponse(BaseModel):
     vice_captain_player_id: int | None
 
 
+class TeamCaptainResponse(BaseModel):
+    """Who currently leads this team.
+
+    Read as squad rows rather than bare ids so a badge and a caption can be
+    rendered without a second request, and so the captaincy flags ride along
+    the same way they already do on every other squad payload.
+
+    Both fields are nullable, and ``null`` means "this side has named nobody" -
+    the same convention the captaincy ``PUT`` uses for its ids, so a client
+    handles an absent title in one place instead of two. A team with no captain
+    answers **200** with ``captain: null``; only an unknown or foreign team is
+    a 404.
+    """
+
+    team_id: int
+    captain: SquadPlayer | None = None
+    vice_captain: SquadPlayer | None = None
+
+
+class TeamCaptainEligibleResponse(BaseModel):
+    """The players this team may name to a captaincy.
+
+    The membership is decided by the server from this team's own squad, so a
+    client cannot widen it: nothing outside ``team_id`` is ever returned, which
+    is what keeps a picker from offering a player from another club.
+
+    Only playing XI members appear, because the captaincy rules require both
+    titles to sit in the XI. Offering a substitute would only produce a 400
+    after the pick was made. An empty ``players`` list is a real answer - the
+    team has no XI yet - not an error.
+    """
+
+    team_id: int
+    players: list[SquadPlayer] = []
+
+
 class TeamSquadResponse(BaseModel):
     team_id: int
     team_name: str
@@ -224,6 +261,10 @@ class TeamDetailResponse(TeamBase):
     playing_11: list[SquadPlayer] = []
     substitutes: list[SquadPlayer] = []
     bench: list[SquadPlayer] = []
+    # The owners of this team, as the team's panel shows them. The owner
+    # records themselves live once, in the owners register; this is a reading
+    # of them, not a copy.
+    owners: list[TeamOwnerOnTeam] = []
 
     model_config = ConfigDict(from_attributes=True)
 

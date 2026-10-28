@@ -22,8 +22,9 @@ import re
 import secrets
 
 # Crockford-ish base32: no I, L, O, U, so codes survive being read aloud or
-# copied off a screen without turning into each other.
-_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+# copied off a screen without turning into each other. Shared with the referees
+# module so an official's code is read the same way a player's is.
+CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 CODE_PREFIX = "CKP"
 CODE_LENGTH = 8
 
@@ -105,7 +106,7 @@ def generate_player_code() -> str:
     code to the next. Uniqueness is enforced by the unique index, and the caller
     retries on the (vanishingly rare) collision.
     """
-    body = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(CODE_LENGTH))
+    body = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
     return f"{CODE_PREFIX}-{body}"
 
 
@@ -152,4 +153,4 @@ def is_valid_code(value: str) -> bool:
     if not value.startswith(f"{CODE_PREFIX}-"):
         return False
     body = value[len(CODE_PREFIX) + 1 :]
-    return len(body) == CODE_LENGTH and all(c in _CODE_ALPHABET for c in body)
+    return len(body) == CODE_LENGTH and all(c in CODE_ALPHABET for c in body)

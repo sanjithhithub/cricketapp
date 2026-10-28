@@ -24,19 +24,37 @@ from app.players.schemas import (
 # --- Partnership analysis ---------------------------------------------------
 
 
+class PartnershipBatter(BaseModel):
+    """One batsman's share of a stand, with the extras kept out of his runs."""
+
+    player_id: int
+    name: str | None = None
+    runs: int = Field(description="Runs scored off the bat by this batsman.")
+    balls: int = Field(description="Balls faced (a wide is not faced; a no-ball is).")
+    contribution_percentage: float = Field(
+        description="This batsman's runs as a share of the pair's combined runs."
+    )
+
+
 class PartnershipEntry(BaseModel):
     partnership_number: int = Field(description="1 for the opening stand, then 2, 3, ...")
     batsman_1_id: int
     batsman_1_name: str
     batsman_2_id: int
     batsman_2_name: str
-    runs: int = Field(description="Runs added while the pair were together.")
+    runs: int = Field(description="Runs added while the pair were together, extras included.")
     balls: int = Field(description="Legal balls faced together (wides/no-balls excluded).")
     run_rate: float = Field(description="Partnership runs per over.")
     for_wicket: int = Field(description="The wicket this stand is the fall for, e.g. 1.")
     unbroken: bool = Field(description="True when the stand was still together at the end.")
     player_out_id: int | None = None
     player_out_name: str | None = None
+    # Per-batsman split. ``total_runs`` mirrors ``runs`` (extras included) and can
+    # exceed ``batter1.runs + batter2.runs``.
+    total_runs: int | None = None
+    total_balls: int | None = None
+    batter1: PartnershipBatter | None = None
+    batter2: PartnershipBatter | None = None
 
 
 class PartnershipInnings(BaseModel):
@@ -54,6 +72,9 @@ class PartnershipInnings(BaseModel):
     # innings with no deliveries.
     opening_partnership: PartnershipEntry | None = None
     highest_partnership: PartnershipEntry | None = None
+    # The stand still at the crease, if any. Null once the innings is over or a
+    # wicket has fallen with the incoming batsman not yet at the crease.
+    current_partnership: PartnershipEntry | None = None
     partnerships: list[PartnershipEntry] = []
 
 
