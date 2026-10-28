@@ -145,3 +145,148 @@ def test_migrated_schema_matches_the_models(migrated):
     problems.extend(f"extra table {t}" for t in sorted(extra))
 
     assert problems == [], "schema drift after migrate:\n  " + "\n  ".join(problems)
+
+
+# ---------------------------------------------------------------------------
+# Postgres
+#
+# The SQLite suite above cannot see either of the bugs that killed a deploy:
+# `batch_alter_table(recreate="always")` rebuilds the table on every backend,
+# and on Postgres that means dropping the primary key out from under the
+# foreign keys that point at it; and an unquoted string server default is
+# accepted by SQLite but read by Postgres as a column reference. Both pass
+# every SQLite assertion and fail only on Postgres, which is why a Postgres
+# run is required to catch them.
+#
+# Set TEST_POSTGRES_URL to a disposable database - never a real one, the
+# migrations are destructive - and these run. Without it they skip, so a
+# machine with no Postgres still gets a green suite.
+# ---------------------------------------------------------------------------
+
+POSTGRES_URL = os.getenv("TEST_POSTGRES_URL")
+
+
+def _dsn_for_psycopg2() -> str:
+    """A plain DSN for `psycopg2.connect`.
+
+    The URL is SQLAlchemy-formatted (`postgresql+psycopg2://...`) because
+    that is what `alembic/env.py` and `app/database.py` expect, but the
+    DBAPI driver itself rejects the `+driver` suffix. Strip it for direct
+    connections rather than asking the user for two URLs.
+    """
+    return POSTGRES_URL.replace("+psycopg2", "").replace("+asyncpg", "")
+
+
+def _url_for_alembic() -> str:
+    """The URL as `env.py` wants it: an async driver.
+
+    `alembic/env.py` derives its sync engine by swapping `+asyncpg` for
+    `+psycopg2`, and importing `app.database` builds an async engine, so the
+    URL handed to Alembic must carry an async driver. Accept a sync URL from
+    the caller and normalise it here.
+    """
+    return POSTGRES_URL.replace("+psycopg2", "+asyncpg")
+
+
+def _run_alembic(*args: str) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env["DATABASE_URL"] = _url_for_alembic()
+    env["PYTHONPATH"] = str(ROOT)
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        cwd=str(ROOT),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _reset_schema() -> None:
+    import psycopg2
+
+    conn = psycopg2.connect(_dsn_for_psycopg2())
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DROP SCHEMA public CASCADE")
+            cur.execute("CREATE SCHEMA public")
+    finally:
+        conn.close()
+
+
+@pytest.fixture(scope="module")
+def migrated_postgres():
+    if not POSTGRES_URL:
+        pytest.skip("TEST_POSTGRES_URL not set; no Postgres to migrate against")
+    _reset_schema()
+    result = _run_alembic("upgrade", "head")
+    assert result.returncode == 0, f"alembic upgrade head failed:\n{result.stdout}{result.stderr}"
+    import psycopg2
+
+    conn = psycopg2.connect(_dsn_for_psycopg2())
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def _pg_scalar(conn, sql: str, params=()):
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        row = cur.fetchone()
+    return row[0] if row else None
+
+
+def test_postgres_upgrade_head_succeeds(migrated_postgres):
+    """The deploy killer: the chain must complete on Postgres, not just SQLite."""
+    assert _pg_scalar(migrated_postgres, "select version_num from alembic_version")
+
+
+def test_postgres_primary_key_survives_the_referees_migration(migrated_postgres):
+    """`recreate="always"` on `matches` dropped `matches_pkey`, which
+    `match_referee_assignments_match_id_fkey` had just been made to depend on.
+    Postgres refused the drop, the migration aborted, and the health check
+    timed out. The primary key must still be there."""
+    assert (
+        _pg_scalar(
+            migrated_postgres,
+            "select count(*) from pg_constraint "
+            "where conrelid = 'matches'::regclass and conname = 'matches_pkey'",
+        )
+        == 1
+    )
+
+
+def test_postgres_every_foreign_key_still_resolves(migrated_postgres):
+    """No constraint may be left pointing at a table the rebuild dropped."""
+    with migrated_postgres.cursor() as cur:
+        cur.execute(
+            "select count(*) from information_schema.table_constraints where constraint_type = 'FOREIGN KEY'"
+        )
+        assert cur.fetchone()[0] > 0
+
+
+def test_postgres_string_defaults_are_quoted_literals(migrated_postgres):
+    """An unquoted `DEFAULT active` is a column reference to Postgres, which
+    rejects it with "cannot use column reference in DEFAULT expression".
+    SQLite accepts the bare word, so the bug is invisible locally."""
+    with migrated_postgres.cursor() as cur:
+        cur.execute(
+            "select table_name, column_default from information_schema.columns "
+            "where column_name = 'ownership_status'"
+        )
+        rows = cur.fetchall()
+    assert rows, "ownership_status columns missing"
+    for table_name, default in rows:
+        assert default is not None, f"{table_name}.ownership_status lost its default"
+        assert "'active'" in default, (
+            f"{table_name}.ownership_status default is not a literal: {default}"
+        )
+
+
+def test_postgres_downgrade_and_reupgrade(migrated_postgres):
+    """The downgrade path rebuilds too, so it carries the same risk."""
+    down = _run_alembic("downgrade", "base")
+    assert down.returncode == 0, f"alembic downgrade base failed:\n{down.stdout}{down.stderr}"
+    up = _run_alembic("upgrade", "head")
+    assert up.returncode == 0, f"re-upgrade failed:\n{up.stdout}{up.stderr}"
