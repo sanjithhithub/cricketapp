@@ -146,10 +146,15 @@ def _server_default(default):
     if default is None:
         return None
     if isinstance(default, str):
-        # An empty string is a default value, not an absence of one: it is
-        # written as an empty literal so the column is NOT NULL and still has
-        # something to put in it.
-        return sa.text("''" if default == "" else default)
+        # A string default is a *value*, so it has to be quoted. `sa.text()`
+        # emits its argument verbatim, and an unquoted word is read by Postgres
+        # as a column reference - which it rejects outright with "cannot use
+        # column reference in DEFAULT expression". SQLite is more forgiving and
+        # accepts the bare word, so an unquoted default passes every test here
+        # and still breaks the Postgres deploy. An empty string is a value too,
+        # not an absence of one.
+        escaped = default.replace("'", "''")
+        return sa.text(f"'{escaped}'")
     return default
 
 

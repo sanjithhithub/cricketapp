@@ -40,7 +40,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("tournament_fixtures", recreate="always") as batch_op:
+    # No `recreate="always"`: rebuilding `tournament_fixtures` on Postgres
+    # would drop its primary key and refuse outright if anything references
+    # it. The default rebuilds on SQLite only and uses plain ALTER TABLE
+    # elsewhere, which supports every operation below natively.
+    with op.batch_alter_table("tournament_fixtures") as batch_op:
         batch_op.alter_column("team_a_id", existing_type=sa.Integer(), nullable=True)
         batch_op.alter_column("team_b_id", existing_type=sa.Integer(), nullable=True)
         batch_op.add_column(sa.Column("next_fixture_id", sa.Integer(), nullable=True))
@@ -65,7 +69,7 @@ def downgrade() -> None:
     NOT NULL columns, so the alter fails rather than inventing a participant.
     Rows are otherwise preserved.
     """
-    with op.batch_alter_table("tournament_fixtures", recreate="always") as batch_op:
+    with op.batch_alter_table("tournament_fixtures") as batch_op:
         batch_op.drop_index("ix_tournament_fixtures_next_fixture_id")
         batch_op.drop_constraint("uq_tournament_fixtures_match", type_="unique")
         batch_op.drop_constraint(

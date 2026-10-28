@@ -217,7 +217,10 @@ def _reconcile_referees(inspector) -> None:
     if not missing and not missing_foreign_keys and not needs_user_email:
         return
 
-    with op.batch_alter_table("referees", recreate="always") as batch_op:
+    # No `recreate="always"`: it would rebuild `referees` on Postgres too and
+    # drop its primary key out from under any foreign key pointing at it. The
+    # default rebuilds on SQLite only, which is all this needs.
+    with op.batch_alter_table("referees") as batch_op:
         for name, type_, nullable, default in missing:
             batch_op.add_column(_referee_column(name, type_, nullable, default))
         for column, table in missing_foreign_keys:
@@ -297,7 +300,17 @@ def _add_match_columns(inspector) -> None:
     # old one. `innings` and `tournament_fixtures` both point at `matches`, and
     # the rebuild has to leave them pointing at the rebuilt table rather than
     # at the copy that is about to be dropped.
-    with op.batch_alter_table("matches", recreate="always") as batch_op:
+    # `recreate="always"` must not be used here. It rebuilds the table on every
+    # backend, and on Postgres that means dropping `matches_pkey` - which this
+    # very migration has just made a dependency of the foreign key
+    # `match_referee_assignments_match_id_fkey`. Postgres refuses
+    # (`ALTER TABLE matches DROP CONSTRAINT matches_pkey` -> "depends on
+    # index"), the migration aborts, and the deploy dies on the health check.
+    # The default `recreate="auto"` already does the right thing on both
+    # backends: it rebuilds on SQLite (which cannot add a column with a
+    # foreign key) and uses plain ALTER TABLE on Postgres, leaving the primary
+    # key untouched.
+    with op.batch_alter_table("matches") as batch_op:
         for column in missing_columns:
             batch_op.add_column(sa.Column(column, sa.Integer(), nullable=True))
         for column in missing_foreign_keys:
