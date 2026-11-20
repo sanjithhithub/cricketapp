@@ -513,3 +513,217 @@ def test_start_innings_still_requires_at_most_eleven_batters(client, new_match):
 
     resp = client.post(f"/v1/matches/{m['match_id']}/start-innings", json={"batting_order": twelve})
     assert resp.status_code == 422, resp.text
+
+
+def test_api_caught_dismisses_the_striker_even_when_the_payload_names_the_non_striker(
+    client, new_match
+):
+    """Regression for the recorded wrong-end dismissal.
+
+    Ball 1 is a single, so the opener who faced it is now the non-striker. The
+    old picker sent that opener's id as `dismissed_player_id` for a caught
+    dismissal, and the wicket landed on the wrong batter's card. The engine must
+    use the delivery's striker snapshot instead.
+    """
+    m = new_match(4)
+    a, match_id, bowler = m["batting"], m["match_id"], m["bowling"][0]
+
+    first = _ball(client, match_id, a[0], a[1], bowler, runs_batsman=1)
+    assert first.status_code == 201, first.text
+    body = first.json()
+    assert (body["striker_id"], body["non_striker_id"]) == (a[1], a[0])
+
+    # a[1] is the striker; the payload wrongly names a[0] (the non-striker).
+    caught = _ball(
+        client,
+        match_id,
+        a[1],
+        a[0],
+        bowler,
+        wicket_type="caught",
+        dismissed_player_id=a[0],
+        fielder_id=m["bowling"][1],
+    )
+    assert caught.status_code == 201, caught.text
+    body = caught.json()
+
+    by_id = {b["player_id"]: b for b in body["batsmen"]}
+    assert by_id[a[1]]["out"] is True
+    assert by_id[a[1]]["dismissal"] == "caught"
+    # The readable form names the catcher and bowler: "c Fielder b Bowler".
+    assert by_id[a[1]]["dismissal_text"].startswith("c ")
+    assert " b " in by_id[a[1]]["dismissal_text"]
+    assert by_id[a[0]]["out"] is False
+    # The striker's end is the vacant one, ready for the incoming batter.
+    assert body["striker_id"] is None
+    assert body["non_striker_id"] == a[0]
+    assert body["awaiting_batsman"] is True
+    assert body["wickets"] == 1
+
+
+# --- the expanded dismissal model over the API -------------------------------
+
+
+def test_api_obstructing_the_field_dismisses_the_chosen_non_striker(client, new_match):
+    """Obstruction is an either-batter dismissal: the scorer's choice is final."""
+    m = new_match(4)
+    match_id, bowler = m["match_id"], m["bowling"][0]
+    card = client.get(f"/v1/matches/{match_id}/scorecard").json()
+
+    resp = _ball(
+        client,
+        match_id,
+        card["striker_id"],
+        card["non_striker_id"],
+        bowler,
+        wicket_type="obstructing_the_field",
+        dismissed_player_id=card["non_striker_id"],
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+
+    by_id = {b["player_id"]: b for b in body["batsmen"]}
+    assert by_id[card["non_striker_id"]]["out"] is True
+    assert by_id[card["non_striker_id"]]["dismissal"] == "obstructing_the_field"
+    assert by_id[card["striker_id"]]["out"] is False
+    # The striker survives at his own end; the non-striker's end is vacant.
+    assert (body["striker_id"], body["non_striker_id"]) == (card["striker_id"], None)
+    # Obstruction is never the bowler's wicket.
+    assert all(bw["wickets"] == 0 for bw in body["bowlers"])
+    assert body["wickets"] == card["wickets"] + 1
+    # It is a normal delivery: the ball still counts.
+    assert body["legal_balls"] == card["legal_balls"] + 1
+
+
+def test_api_retired_out_is_a_dead_ball_with_no_score_or_bowler_credit(client, new_match):
+    """Retirement happens between deliveries, so it must not consume a ball."""
+    m = new_match(4)
+    match_id, bowler = m["match_id"], m["bowling"][0]
+    card = client.get(f"/v1/matches/{match_id}/scorecard").json()
+
+    resp = _ball(
+        client,
+        match_id,
+        card["striker_id"],
+        card["non_striker_id"],
+        bowler,
+        extra_type="dead_ball",
+        wicket_type="retired_out",
+        dismissed_player_id=card["non_striker_id"],
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+
+    by_id = {b["player_id"]: b for b in body["batsmen"]}
+    assert by_id[card["non_striker_id"]]["out"] is True
+    assert by_id[card["non_striker_id"]]["dismissal"] == "retired_out"
+    assert by_id[card["striker_id"]]["out"] is False
+    assert (body["striker_id"], body["non_striker_id"]) == (card["striker_id"], None)
+    # No ball, no run, no bowler figure.
+    assert body["legal_balls"] == card["legal_balls"]
+    assert body["total"] == card["total"]
+    assert body["extras"] == card["extras"]
+    assert body["overs_bowled_str"] == card["overs_bowled_str"]
+    assert body["bowlers"] == card["bowlers"]
+    assert body["wickets"] == card["wickets"] + 1
+
+
+def test_api_timed_out_dismisses_the_incoming_batter_not_the_survivor(client, new_match):
+    """A timed out removes the batter sent in, never the one already there."""
+    m = new_match(4)
+    a, match_id, bowler = m["batting"], m["match_id"], m["bowling"][0]
+
+    # First wicket: the striker is caught, leaving the striker end vacant.
+    first = _wicket(client, match_id, a[0], a[1], bowler, a[0])
+    assert first.status_code == 201, first.text
+    body = first.json()
+    assert body["striker_id"] is None
+    assert body["non_striker_id"] == a[1]
+
+    # The scorer sends a[2] in, then records that they timed out before a ball.
+    picked = _pick(client, match_id, a[2])
+    assert picked.status_code == 200, picked.text
+    card = picked.json()
+    assert (card["striker_id"], card["non_striker_id"]) == (a[2], a[1])
+
+    resp = _ball(
+        client,
+        match_id,
+        card["striker_id"],
+        card["non_striker_id"],
+        bowler,
+        extra_type="dead_ball",
+        wicket_type="timed_out",
+        dismissed_player_id=a[2],
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+
+    by_id = {b["player_id"]: b for b in body["batsmen"]}
+    assert by_id[a[2]]["out"] is True
+    assert by_id[a[2]]["dismissal"] == "timed_out"
+    assert by_id[a[1]]["out"] is False
+    assert by_id[a[0]]["out"] is True
+    # The survivor is still at the crease and the vacancy is at the striker end.
+    assert (body["striker_id"], body["non_striker_id"]) == (None, a[1])
+    # The dead ball consumed no delivery.
+    assert body["legal_balls"] == card["legal_balls"]
+    assert body["wickets"] == card["wickets"] + 1
+
+
+def test_api_wide_can_carry_a_stumping_and_no_ball_a_hit_the_ball_twice(client, new_match):
+    """The Laws' lawful-per-extra matrix is enforced over the API too."""
+    wide_match = new_match(4)
+    a, match_id, bowler = (
+        wide_match["batting"],
+        wide_match["match_id"],
+        wide_match["bowling"][0],
+    )
+    resp = _ball(
+        client,
+        match_id,
+        a[0],
+        a[1],
+        bowler,
+        extra_type="wide",
+        runs_extras=1,
+        wicket_type="stumped",
+        dismissed_player_id=a[0],
+        fielder_id=wide_match["bowling"][1],
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    by_id = {b["player_id"]: b for b in body["batsmen"]}
+    assert by_id[a[0]]["out"] is True
+    assert by_id[a[0]]["dismissal"] == "stumped"
+    assert body["legal_balls"] == 0
+    assert body["extras"] == 1
+    # A stumping stays the bowler's wicket even off a wide.
+    assert any(bw["wickets"] == 1 for bw in body["bowlers"])
+
+    no_ball_match = new_match(4)
+    a, match_id, bowler = (
+        no_ball_match["batting"],
+        no_ball_match["match_id"],
+        no_ball_match["bowling"][0],
+    )
+    resp = _ball(
+        client,
+        match_id,
+        a[0],
+        a[1],
+        bowler,
+        extra_type="no_ball",
+        runs_extras=1,
+        wicket_type="hit_the_ball_twice",
+        dismissed_player_id=a[0],
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    by_id = {b["player_id"]: b for b in body["batsmen"]}
+    assert by_id[a[0]]["out"] is True
+    assert by_id[a[0]]["dismissal"] == "hit_the_ball_twice"
+    assert body["legal_balls"] == 0
+    assert body["extras"] == 1
+    # Hit the ball twice is not a bowler's wicket.
+    assert all(bw["wickets"] == 0 for bw in body["bowlers"])

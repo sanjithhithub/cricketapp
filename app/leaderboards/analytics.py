@@ -51,7 +51,11 @@ _FIELDING_WICKETS = {
 
 # Wides and no-balls are penalty deliveries: they concede at least one run to the
 # side and never count as a ball, so neither can be a dot ball.
-_ILLEGAL_BALL_EXTRAS = (ExtraType.WIDE.value, ExtraType.NO_BALL.value)
+_ILLEGAL_BALL_EXTRAS = (
+    ExtraType.WIDE.value,
+    ExtraType.NO_BALL.value,
+    ExtraType.DEAD_BALL.value,
+)
 
 
 def _new_accumulator(b: BatsmanCard) -> dict:

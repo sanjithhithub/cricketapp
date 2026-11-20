@@ -32,6 +32,14 @@ class PlayerTeamAssignment(Base):
 
     role: Mapped[str] = mapped_column(String(20), default="playing_11")
 
+    # What this player does inside the XI: "wicketkeeper", "bowler" or
+    # "fielder". It is the selection decision (1 keeper + 1 bowler + 9
+    # fielders), not the squad bucket and not the player's own batting
+    # position, so it gets its own column rather than overloading `role`.
+    # Nullable because only playing XI rows carry one - a substitute or a
+    # benched player has no field job until they are picked.
+    xi_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+
     # Captaincy is deliberately separate from `role`: `role` decides which bucket
     # the player sits in and how many may be in the playing XI, so a captaincy
     # flag keeps its own meaning instead of competing with that. Both default to

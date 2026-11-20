@@ -874,6 +874,14 @@ async def update_player_team_role(
             return None, capacity_error
 
     assignment.role = role
+    # A field job belongs to the XI: leaving it clears "wicketkeeper" /
+    # "bowler" / "fielder", so a substitute never carries a job. Moving into
+    # the XI this way records no job either - only the XI picker knows
+    # whether someone was picked to keep, bowl or field - so a jobless XI
+    # member is exactly the signal that this side has not composed its XI
+    # through the picker yet.
+    if role != "playing_11":
+        assignment.xi_role = None
     await db.commit()
     return assignment, None
 

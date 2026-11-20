@@ -35,7 +35,11 @@ from app.scoring.enums import ExtraType
 
 # Wides and no-balls are penalty deliveries: they never count as a ball of the
 # over, so a partnership's ball count excludes them.
-ILLEGAL_BALL_EXTRAS = (ExtraType.WIDE.value, ExtraType.NO_BALL.value)
+ILLEGAL_BALL_EXTRAS = (
+    ExtraType.WIDE.value,
+    ExtraType.NO_BALL.value,
+    ExtraType.DEAD_BALL.value,
+)
 
 
 def _extra_value(delivery) -> str:
@@ -142,8 +146,8 @@ def _attribute(stand: Partnership, delivery) -> None:
     batter = stand.batter_by_id(delivery.striker_id)
     if batter is not None:
         batter.runs += delivery.runs_batsman
-        # A wide is not faced by the batsman; a no-ball is.
-        if extra != ExtraType.WIDE.value:
+        # A wide and a dead ball are not faced by the batsman; a no-ball is.
+        if extra not in (ExtraType.WIDE.value, ExtraType.DEAD_BALL.value):
             batter.balls += 1
 
 

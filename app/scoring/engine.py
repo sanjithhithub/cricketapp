@@ -1,8 +1,17 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from app.players.identity import full_name
-from app.scoring.enums import ExtraType, MatchFormat, WicketType
+from app.scoring.enums import (
+    DEAD_BALL_WICKETS,
+    NON_BOWLER_WICKETS,
+    STRIKER_ONLY_WICKETS,
+    WICKETS_ON_NO_BALL,
+    WICKETS_ON_WIDE,
+    ExtraType,
+    MatchFormat,
+    WicketType,
+)
 from app.scoring.partnerships import (
     BatterContribution,
     Partnership,
@@ -37,14 +46,286 @@ def max_overs_for(match, innings=None) -> int | None:
         return None
 
 
-# Wides and no-balls are the only deliveries that do not count as a ball of
-# the over. Everything else (normal runs, byes, leg byes) is a legal ball.
-_ILLEGAL_BALL_EXTRAS = (ExtraType.WIDE, ExtraType.NO_BALL)
+# Wides, no-balls and the dead-ball marker used for between-delivery
+# dismissals are the only deliveries that do not count as a ball of the over.
+# Everything else (normal runs, byes, leg byes) is a legal ball.
+_ILLEGAL_BALL_EXTRAS = (ExtraType.WIDE, ExtraType.NO_BALL, ExtraType.DEAD_BALL)
 
-# A penalty delivery is dead by the time it reaches the batsman, so the only
-# dismissal it can produce is a run out. Every other wicket needs a ball that
-# was actually delivered.
-_WICKETS_OFF_EXTRA = (WicketType.RUN_OUT,)
+# Only these two extras carry a mandatory penalty run.
+_PENALTY_EXTRAS = (ExtraType.WIDE, ExtraType.NO_BALL)
+
+
+def _wickets_allowed_on(extra: ExtraType) -> tuple[WicketType, ...] | None:
+    """The dismissals a penalty delivery can produce, or None for a normal ball.
+
+    A wide keeps the ball live for a stumping, a run out or obstruction. A
+    no-ball removes the stumping (it becomes a run out) but allows the striker
+    to be out hitting the ball twice.
+    """
+    if extra == ExtraType.WIDE:
+        return WICKETS_ON_WIDE
+    if extra == ExtraType.NO_BALL:
+        return WICKETS_ON_NO_BALL
+    return None
+
+
+@dataclass(frozen=True)
+class RunComponents:
+    """One delivery resolved into the run components the Laws of Cricket name.
+
+    ``total`` is what the team received, ``runs_extras`` (``total`` minus the
+    batter's runs) is what lands in the extras column, and ``completed_runs``
+    is what the two batters physically ran between the wickets - the number
+    strike rotation turns on. Penalty runs and boundary allowances are
+    deliberately excluded from it: neither was run, so neither may move the
+    batters.
+    """
+
+    extra: ExtraType
+    batter_runs: int
+    wides: int
+    no_balls: int
+    byes: int
+    leg_byes: int
+    # Penalty runs under Law 28 that belong to neither a wide nor a no ball.
+    penalty_runs: int
+    completed_runs: int
+    boundary_runs: int
+    total: int
+
+    @property
+    def runs_extras(self) -> int:
+        """Every run the team scored that was not credited to the batter.
+
+        Invariant: ``total == batter_runs + runs_extras`` and
+        ``runs_extras == wides + no_balls + byes + leg_byes + penalty_runs``.
+        """
+        return self.total - self.batter_runs
+
+    @property
+    def mandatory_penalty(self) -> int:
+        """The penalty runs the batters never ran.
+
+        A wide is always worth its one penalty run; a no ball carries the
+        penalty run(s) recorded in its own component (which for a delivery
+        stored the old way is the whole extras figure); Law 28 penalties are
+        added on top.
+        """
+        if self.extra is ExtraType.WIDE and self.wides > 0:
+            base = 1
+        elif self.extra is ExtraType.NO_BALL:
+            base = self.no_balls
+        else:
+            base = 0
+        return base + self.penalty_runs
+
+    @property
+    def legal_ball(self) -> bool:
+        """A wide, a no ball and the dead-ball marker are not balls of the over."""
+        return self.extra not in _ILLEGAL_BALL_EXTRAS
+
+    @property
+    def bowler_conceded(self) -> int:
+        """What the bowler pays for: everything except byes and leg byes."""
+        return self.batter_runs + self.wides + self.no_balls + self.penalty_runs
+
+
+def delivery_components(delivery) -> RunComponents:
+    """Read one delivery row (ORM object or :class:`DeliveryRecord`) as runs.
+
+    Rows written by the engine carry their components, so they are read
+    straight off. A row that carries none - one written before the components
+    existed, or inserted directly rather than through the engine - is re-derived
+    from ``extra_type`` plus ``runs_extras``, which is exactly how every
+    delivery used to be stored. The two paths agree on the total and on the
+    parity of the completed runs, so replaying an old log gives the same ends.
+    """
+    raw_extra = getattr(delivery, "extra_type", None)
+    extra = (
+        raw_extra
+        if isinstance(raw_extra, ExtraType)
+        else ExtraType(raw_extra or ExtraType.NONE.value)
+    )
+
+    wides = int(getattr(delivery, "runs_wides", 0) or 0)
+    no_balls = int(getattr(delivery, "runs_no_balls", 0) or 0)
+    byes = int(getattr(delivery, "runs_byes", 0) or 0)
+    leg_byes = int(getattr(delivery, "runs_leg_byes", 0) or 0)
+    penalty_runs = int(getattr(delivery, "runs_penalty", 0) or 0)
+
+    if not (wides or no_balls or byes or leg_byes or penalty_runs):
+        extras = int(getattr(delivery, "runs_extras", 0) or 0)
+        wides = extras if extra is ExtraType.WIDE else 0
+        no_balls = extras if extra is ExtraType.NO_BALL else 0
+        byes = extras if extra is ExtraType.BYE else 0
+        leg_byes = extras if extra is ExtraType.LEG_BYE else 0
+        penalty_runs = 0
+
+    batter_runs = int(getattr(delivery, "runs_batsman", 0) or 0)
+    total = batter_runs + wides + no_balls + byes + leg_byes + penalty_runs
+
+    mandatory = 0
+    if extra is ExtraType.WIDE and wides > 0:
+        mandatory = 1
+    elif extra is ExtraType.NO_BALL:
+        mandatory = no_balls
+    mandatory += penalty_runs
+    non_penalty = max(0, total - mandatory)
+
+    stored_boundary = getattr(delivery, "boundary_runs", None)
+    boundary_runs = (
+        int(stored_boundary)
+        if stored_boundary is not None
+        else (non_penalty if non_penalty in (4, 6) else 0)
+    )
+    stored_completed = getattr(delivery, "completed_runs", None)
+    completed_runs = (
+        int(stored_completed)
+        if stored_completed is not None
+        else max(0, non_penalty - boundary_runs)
+    )
+
+    return RunComponents(
+        extra=extra,
+        batter_runs=batter_runs,
+        wides=wides,
+        no_balls=no_balls,
+        byes=byes,
+        leg_byes=leg_byes,
+        penalty_runs=penalty_runs,
+        completed_runs=completed_runs,
+        boundary_runs=boundary_runs,
+        total=total,
+    )
+
+
+def resolve_delivery_runs(inp: "DeliveryInput") -> "DeliveryInput":
+    """Fill in a delivery's run components, or reject a contradictory one.
+
+    Two shapes are accepted and both end up fully componentised:
+
+    - **component shape** - any of ``runs_wides``/``runs_no_balls``/
+      ``runs_byes``/``runs_leg_byes``/``runs_penalty`` is non-zero. This is the
+      only way to say "a no ball that also went for two byes", because a single
+      ``extra_type`` cannot name two extras at once. ``runs_extras`` must then
+      be 0 or exactly their sum, and ``extra_type`` must name the delivery's
+      primary component (a no ball beats a wide, which is what
+      "no ball overrides a wide" means).
+    - **legacy shape** - one ``extra_type`` and one ``runs_extras`` figure,
+      which is how every delivery was recorded before. The whole figure goes
+      into that one component.
+
+    Either way the run total, the boundary allowance and the runs actually
+    completed between the wickets come out the same, which is what keeps old
+    innings replaying to the same ends.
+    """
+    extra = inp.extra_type
+    wides = inp.runs_wides
+    no_balls = inp.runs_no_balls
+    byes = inp.runs_byes
+    leg_byes = inp.runs_leg_byes
+    penalty_runs = inp.runs_penalty
+
+    # The umpire disallowing the leg byes: those runs are struck out before
+    # anything else is derived, because every later step (the extras figure,
+    # the components, the rotation) must see a delivery that never scored
+    # them. ``runs_extras`` is reduced by the same amount, so a client that
+    # sent the leg byes in either shape - as a component or as the whole
+    # extras figure - ends up with the same zero-run delivery.
+    runs_extras = inp.runs_extras
+    if not inp.leg_byes_allowed:
+        claimed_leg_byes = leg_byes or (runs_extras if extra is ExtraType.LEG_BYE else 0)
+        leg_byes = 0
+        runs_extras = max(0, runs_extras - claimed_leg_byes)
+
+    given = wides or no_balls or byes or leg_byes or penalty_runs
+    if extra is ExtraType.DEAD_BALL and (given or runs_extras or inp.runs_batsman):
+        raise InvalidDeliveryError("a dead ball carries no runs")
+
+    if given:
+        if wides and no_balls:
+            raise InvalidDeliveryError("a no ball overrides a wide - record the no ball only")
+        component_sum = wides + no_balls + byes + leg_byes + penalty_runs
+        if runs_extras not in (0, component_sum):
+            raise InvalidDeliveryError(
+                "runs_extras must equal the sum of the run components "
+                f"({component_sum}), not {runs_extras}"
+            )
+        runs_extras = component_sum
+        primary = (
+            ExtraType.NO_BALL
+            if no_balls
+            else ExtraType.WIDE
+            if wides
+            else ExtraType.BYE
+            if byes
+            else ExtraType.LEG_BYE
+            if leg_byes
+            else None
+        )
+        if primary is not None and extra is not primary:
+            raise InvalidDeliveryError(
+                f"a delivery scoring {component_sum} in the {primary.value} component "
+                f"must be recorded as {primary.value}, not {extra.value}"
+            )
+    else:
+        if extra is ExtraType.WIDE:
+            wides = runs_extras
+        elif extra is ExtraType.NO_BALL:
+            no_balls = runs_extras
+        elif extra is ExtraType.BYE:
+            byes = runs_extras
+        elif extra is ExtraType.LEG_BYE:
+            leg_byes = runs_extras
+        elif extra is ExtraType.DEAD_BALL:
+            wides = no_balls = byes = leg_byes = penalty_runs = 0
+
+    component_sum = wides + no_balls + byes + leg_byes + penalty_runs
+    if runs_extras != component_sum:
+        if extra is ExtraType.NONE:
+            raise InvalidDeliveryError(
+                "extra runs require an extra type (wide, no_ball, bye, leg_bye)"
+            )
+        raise InvalidDeliveryError(
+            "runs_extras must equal the sum of the run components "
+            f"({component_sum}), not {runs_extras}"
+        )
+
+    total = inp.runs_batsman + component_sum
+    mandatory = 0
+    if extra is ExtraType.WIDE and wides > 0:
+        mandatory = 1
+    elif extra is ExtraType.NO_BALL:
+        mandatory = no_balls
+    mandatory += penalty_runs
+    non_penalty = max(0, total - mandatory)
+
+    boundary_runs = inp.boundary_runs
+    if boundary_runs is None:
+        boundary_runs = non_penalty if non_penalty in (4, 6) else 0
+    else:
+        if boundary_runs not in (0, 4, 6):
+            raise InvalidDeliveryError("a boundary allowance must be 4 or 6 runs")
+        if boundary_runs > non_penalty:
+            raise InvalidDeliveryError(
+                f"boundary_runs ({boundary_runs}) cannot exceed the {non_penalty} "
+                "runs that were not a penalty"
+            )
+    completed_runs = max(0, non_penalty - boundary_runs)
+
+    return replace(
+        inp,
+        runs_wides=wides,
+        runs_no_balls=no_balls,
+        runs_byes=byes,
+        runs_leg_byes=leg_byes,
+        runs_penalty=penalty_runs,
+        runs_extras=runs_extras,
+        boundary_runs=boundary_runs,
+        completed_runs=completed_runs,
+        total_team_runs=total,
+    )
+
 
 # A batsman must be dismissed in a normal innings to end it; a Super Over is
 # capped at 2 wickets instead.
@@ -98,6 +379,28 @@ class DeliveryInput:
     # not affect the score at all; it is recorded only so fielding figures can
     # be attributed later.
     fielder_id: int | None = None
+    # --- MCC run components (see resolve_delivery_runs) ---------------------
+    # All zero means "legacy shape": the whole extras figure belongs to whatever
+    # ``extra_type`` names. Non-zero means "component shape", which is the only
+    # way to record e.g. a no ball that also went for byes.
+    runs_wides: int = 0
+    runs_no_balls: int = 0
+    runs_byes: int = 0
+    runs_leg_byes: int = 0
+    runs_penalty: int = 0
+    # Filled in by resolve_delivery_runs.
+    boundary_runs: int | None = None
+    completed_runs: int | None = None
+    total_team_runs: int | None = None
+    # Whether the batters had crossed when the ball became dead - the fact a
+    # run out turns on (Law 38.3). None means "derive from the completed runs".
+    batters_crossed: bool | None = None
+    # The umpire disallowing the leg byes: no runs, and no change of ends.
+    leg_byes_allowed: bool = True
+    # Law 37.3 - wilful obstruction that prevented a catch from being taken.
+    obstruction_prevented_catch: bool = False
+    # Idempotency key: resubmitting the same id must not score the ball twice.
+    client_request_id: str | None = None
 
 
 @dataclass
@@ -115,6 +418,19 @@ class DeliveryRecord:
     dismissed_player_id: int | None = None
     fielder_id: int | None = None
     id: int | None = None
+    # Run components as recorded (see RunComponents). The completed / boundary /
+    # total columns stay None on a record built by hand - a legacy log - and
+    # delivery_components derives them from the extras figure instead.
+    runs_wides: int = 0
+    runs_no_balls: int = 0
+    runs_byes: int = 0
+    runs_leg_byes: int = 0
+    runs_penalty: int = 0
+    completed_runs: int | None = None
+    boundary_runs: int | None = None
+    total_team_runs: int | None = None
+    batters_crossed: bool | None = None
+    client_request_id: str | None = None
 
 
 @dataclass
@@ -134,6 +450,9 @@ class BatsmanCard:
     strike_rate: float = 0.0
     out: bool = False
     dismissal: str | None = None
+    # Human-readable dismissal, e.g. "c Keeper b Bowler" or "lbw b Bowler".
+    # Optional so older consumers keep working; ``dismissal`` remains the enum.
+    dismissal_text: str | None = None
     did_not_bat: bool = False
 
 
@@ -302,6 +621,16 @@ class ScoreEngine:
         if state.completed:
             raise InningsEndedError(f"Innings already completed ({state.end_reason})")
 
+        # The striker is the batter who faced this ball. For a bowled, caught,
+        # LBW, stumped, hit-wicket or hit-the-ball-twice dismissal only that
+        # batter can be out, so never trust a client's stale picker over the
+        # delivery's own snapshot.
+        delivery_input = self._normalize_dismissal(delivery_input)
+        # Split the runs into their components before anything is validated or
+        # stored, so the schema, the engine and the row all agree on what this
+        # delivery actually scored.
+        delivery_input = resolve_delivery_runs(delivery_input)
+
         batting_ids = {b.player_id for b in order}
         self._validate_input(
             delivery_input,
@@ -325,6 +654,17 @@ class ScoreEngine:
         ):
             innings.next_batsman_id = None
 
+        # The ends only change when the batters actually ran an odd number of
+        # runs. Penalties and boundary allowances were never run, so they are
+        # already excluded from ``completed_runs``; an explicit ``batters_crossed``
+        # (the scorer's answer at the instant a wicket fell) wins over parity.
+        completed = delivery_input.completed_runs or 0
+        batters_crossed = (
+            delivery_input.batters_crossed
+            if delivery_input.batters_crossed is not None
+            else completed % 2 == 1
+        )
+
         record = DeliveryRecord(
             innings_id=innings_id,
             over_number=state.current_over,
@@ -338,6 +678,18 @@ class ScoreEngine:
             wicket_type=delivery_input.wicket_type.value if delivery_input.wicket_type else None,
             dismissed_player_id=delivery_input.dismissed_player_id,
             fielder_id=delivery_input.fielder_id,
+            runs_wides=delivery_input.runs_wides,
+            runs_no_balls=delivery_input.runs_no_balls,
+            runs_byes=delivery_input.runs_byes,
+            runs_leg_byes=delivery_input.runs_leg_byes,
+            runs_penalty=delivery_input.runs_penalty,
+            completed_runs=completed,
+            boundary_runs=delivery_input.boundary_runs or 0,
+            total_team_runs=delivery_input.total_team_runs
+            if delivery_input.total_team_runs is not None
+            else delivery_input.runs_batsman + delivery_input.runs_extras,
+            batters_crossed=batters_crossed,
+            client_request_id=delivery_input.client_request_id,
         )
         return await self.repo.add_delivery(record)
 
@@ -408,6 +760,8 @@ class ScoreEngine:
                 "sixes": 0,
                 "out": False,
                 "dismissal": None,
+                "dismissal_bowler_id": None,
+                "dismissal_fielder_id": None,
             }
             for b in ordered
         }
@@ -445,8 +799,9 @@ class ScoreEngine:
 
             if d.striker_id in bat_stats:
                 # A wide is not faced by the batsman; a no-ball IS faced but
-                # the batter scores only the runs off the bat.
-                if extra != ExtraType.WIDE:
+                # the batter scores only the runs off the bat. A dead ball is
+                # not a delivery at all, so it faces nobody.
+                if extra not in (ExtraType.WIDE, ExtraType.DEAD_BALL):
                     bat_stats[d.striker_id]["balls"] += 1
                 bat_stats[d.striker_id]["runs"] += d.runs_batsman
                 if d.runs_batsman == 4:
@@ -461,6 +816,8 @@ class ScoreEngine:
             ):
                 bat_stats[d.dismissed_player_id]["out"] = True
                 bat_stats[d.dismissed_player_id]["dismissal"] = wicket.value if wicket else "out"
+                bat_stats[d.dismissed_player_id]["dismissal_bowler_id"] = d.bowler_id
+                bat_stats[d.dismissed_player_id]["dismissal_fielder_id"] = d.fielder_id
                 fow_records.append(
                     {
                         "wicket_number": len(fow_records) + 1,
@@ -470,6 +827,11 @@ class ScoreEngine:
                         "ball_number": d.ball_number,
                     }
                 )
+
+            # A dead ball is a between-deliveries dismissal marker, not a
+            # delivery: the bowler neither bowled it nor is credited with it.
+            if extra == ExtraType.DEAD_BALL:
+                continue
 
             # A bowler always belongs to the fielding side. A delivery recorded
             # with a bowler from the batting side is corrupt data: credit no
@@ -482,13 +844,12 @@ class ScoreEngine:
                 d.bowler_id,
                 {"balls": 0, "runs": 0, "wickets": 0, "wides": 0, "no_balls": 0, "by_over": {}},
             )
-            # Byes and leg byes are not charged to the bowler. Wides and
-            # no-balls are: the bowler concedes the whole delivery.
-            conceded = (
-                d.runs_batsman + d.runs_extras
-                if extra not in (ExtraType.BYE, ExtraType.LEG_BYE)
-                else d.runs_batsman
-            )
+            # Byes and leg byes are not charged to the bowler. Runs off the bat,
+            # the wide / no-ball penalty and Law 28 penalty runs are - which is
+            # what bowler_conceded() adds up, component by component, so a no
+            # ball that also went for byes charges only the penalty.
+            comp = delivery_components(d)
+            conceded = comp.bowler_conceded
             bl["runs"] += conceded
             if extra == ExtraType.WIDE:
                 bl["wides"] += 1
@@ -503,7 +864,7 @@ class ScoreEngine:
                 bl["balls"] += 1
                 over[0] += 1
             over[1] += conceded
-            if wicket and not winning_ball and wicket not in _WICKETS_OFF_EXTRA:
+            if wicket and not winning_ball and wicket not in NON_BOWLER_WICKETS:
                 bl["wickets"] += 1
 
         # The stand at the crease right now. Derived from the same delivery log
@@ -527,10 +888,27 @@ class ScoreEngine:
 
         # Names and codes for everyone on the card. A missing id resolves to
         # blanks rather than failing the scorecard: a deleted player should not
-        # take a match's figures down with it.
+        # take a match's figures down with it. The bowler and fielder named in a
+        # dismissal are on the card too, so "c X b Y" can be rendered without a
+        # second lookup.
+        dismissal_ids = [
+            pid
+            for stats in bat_stats.values()
+            for pid in (
+                stats["dismissal_bowler_id"],
+                stats["dismissal_fielder_id"],
+            )
+            if pid is not None
+        ]
         identities = await self.repo.player_identities(
-            list(bat_stats) + list(bowler_stats) + partnership_player_ids
+            list(bat_stats) + list(bowler_stats) + partnership_player_ids + dismissal_ids
         )
+
+        def identity_name(player_id: int | None) -> str | None:
+            if player_id is None:
+                return None
+            first, last, _code = identities.get(player_id, (None, None, None))
+            return full_name(first, last) or None
 
         batsmen = [
             BatsmanCard(
@@ -550,6 +928,11 @@ class ScoreEngine:
                 else 0.0,
                 out=bat_stats[b.player_id]["out"],
                 dismissal=bat_stats[b.player_id]["dismissal"],
+                dismissal_text=self._dismissal_text(
+                    bat_stats[b.player_id]["dismissal"],
+                    identity_name(bat_stats[b.player_id]["dismissal_bowler_id"]),
+                    identity_name(bat_stats[b.player_id]["dismissal_fielder_id"]),
+                ),
                 did_not_bat=b.player_id not in at_crease,
             )
             for b in ordered
@@ -653,6 +1036,69 @@ class ScoreEngine:
             run_rate=stand.run_rate,
         )
 
+    @staticmethod
+    def _normalize_dismissal(inp: DeliveryInput) -> DeliveryInput:
+        """Return a delivery whose dismissed batter matches the dismissal type.
+
+        A bowled, caught, LBW, stumped, hit-wicket or hit-the-ball-twice
+        dismissal can only remove the batter facing the ball. If a client sends
+        the non-striker's id - a stale picker, or an old screen that offered
+        both batters for every wicket - correct it to ``striker_id`` rather than
+        recording the wicket against the wrong player.
+
+        A run out, obstruction or retirement is left exactly as sent because
+        either batter may legitimately be out and the scorer chose which one.
+        Timed out is also left alone: the batter it removes is the incoming one,
+        whom the scorer has just sent in to the vacant end.
+        """
+        if (
+            inp.wicket_type in STRIKER_ONLY_WICKETS
+            and inp.dismissed_player_id == inp.non_striker_id
+            and inp.non_striker_id != inp.striker_id
+        ):
+            return replace(inp, dismissed_player_id=inp.striker_id)
+        return inp
+
+    @staticmethod
+    def _dismissal_text(
+        wicket: str | None,
+        bowler: str | None,
+        fielder: str | None,
+    ) -> str | None:
+        """Cricket notation for one dismissal, or None for a not-out batter.
+
+        The scorecard keeps the raw enum in ``dismissal`` (clients and data
+        migrations rely on it); this is the readable form a scorecard shows. A
+        fielder is named only when the delivery actually recorded one, so a
+        catch without attribution reads "caught b Bowler" rather than inventing
+        a keeper.
+        """
+        if not wicket:
+            return None
+        if bowler is None:
+            bowler = "the bowler"
+        if wicket == WicketType.CAUGHT.value:
+            return f"c {fielder} b {bowler}" if fielder else f"caught b {bowler}"
+        if wicket == WicketType.BOWLED.value:
+            return f"b {bowler}"
+        if wicket == WicketType.LBW.value:
+            return f"lbw b {bowler}"
+        if wicket == WicketType.STUMPED.value:
+            return f"st {fielder} b {bowler}" if fielder else f"st b {bowler}"
+        if wicket == WicketType.HIT_WICKET.value:
+            return f"hit wicket b {bowler}"
+        if wicket == WicketType.RUN_OUT.value:
+            return f"run out ({fielder})" if fielder else "run out"
+        if wicket == WicketType.OBSTRUCTING_THE_FIELD.value:
+            return "obstructing the field"
+        if wicket == WicketType.HIT_THE_BALL_TWICE.value:
+            return "hit the ball twice"
+        if wicket == WicketType.RETIRED_OUT.value:
+            return "retired out"
+        if wicket == WicketType.TIMED_OUT.value:
+            return "timed out"
+        return wicket.replace("_", " ")
+
     def _validate_input(
         self,
         inp: DeliveryInput,
@@ -706,7 +1152,24 @@ class ScoreEngine:
                 raise InvalidBatsmanError(f"player {incoming} is not in the batting order")
         if inp.runs_batsman < 0 or inp.runs_extras < 0:
             raise InvalidDeliveryError("runs cannot be negative")
-        if inp.extra_type == ExtraType.NONE and inp.runs_extras != 0:
+        if (
+            inp.extra_type == ExtraType.NONE
+            and inp.runs_extras != 0
+            # Law 28 penalty runs are real extras with no `extra_type` of their
+            # own: they arrive as the runs_penalty component, and a delivery
+            # that carries only that component is recordable with extra_type
+            # "none". A legacy payload (one extras figure, no components, no
+            # type) is already rejected inside resolve_delivery_runs, which
+            # runs before this check, so the component test here is what keeps
+            # penalty runs from being refused twice.
+            and not (
+                inp.runs_wides
+                or inp.runs_no_balls
+                or inp.runs_byes
+                or inp.runs_leg_byes
+                or inp.runs_penalty
+            )
+        ):
             raise InvalidDeliveryError(
                 "extra runs require an extra type (wide, no_ball, bye, leg_bye)"
             )
@@ -714,11 +1177,26 @@ class ScoreEngine:
             raise InvalidDeliveryError("runs on a wide must be recorded as extras")
         if inp.extra_type in (ExtraType.BYE, ExtraType.LEG_BYE) and inp.runs_batsman != 0:
             raise InvalidDeliveryError("bye/leg-bye runs must be recorded as extras")
-        if inp.extra_type in _ILLEGAL_BALL_EXTRAS and inp.runs_extras < 1:
+        if inp.extra_type == ExtraType.DEAD_BALL:
+            # A dead ball is a marker for a dismissal between deliveries
+            # (retired out, timed out). It is not a delivery at all: it carries
+            # no runs, consumes no ball of the over and earns the bowler nothing.
+            if inp.runs_batsman or inp.runs_extras:
+                raise InvalidDeliveryError("a dead ball carries no runs")
+            if inp.wicket_type not in DEAD_BALL_WICKETS:
+                raise InvalidDeliveryError(
+                    "a dead ball must record a retired out or timed out dismissal"
+                )
+        elif inp.extra_type in _PENALTY_EXTRAS and inp.runs_extras < 1:
             # A wide and a no-ball are penalty deliveries: each is worth at
             # least one extra run before any runs off the bat.
             label = inp.extra_type.value.replace("_", " ")
             raise InvalidDeliveryError(f"a {label} is worth at least 1 extra run")
+        if inp.wicket_type in DEAD_BALL_WICKETS and inp.extra_type != ExtraType.DEAD_BALL:
+            raise InvalidDeliveryError(
+                f"a {inp.wicket_type.value.replace('_', ' ')} dismissal must be recorded "
+                "as a dead ball"
+            )
         if inp.wicket_type is not None and inp.dismissed_player_id is None:
             raise InvalidDeliveryError("dismissed_player_id is required when a wicket falls")
         if inp.wicket_type is None and inp.dismissed_player_id is not None:
@@ -728,29 +1206,58 @@ class ScoreEngine:
             inp.non_striker_id,
         ):
             raise InvalidDeliveryError("dismissed player must be the striker or non-striker")
-        # A wide / no-ball is dead by the time it reaches the batsman, so the
-        # only wicket it can carry is a run out.
+        if inp.wicket_type in STRIKER_ONLY_WICKETS and inp.dismissed_player_id not in (
+            None,
+            inp.striker_id,
+        ):
+            raise InvalidDeliveryError(
+                f"a {inp.wicket_type.value.replace('_', ' ')} dismissal must be the striker"
+            )
+        # A wide stays live for a stumping, a run out or obstruction; a no-ball
+        # removes the stumping but adds hit-the-ball-twice. Every other wicket
+        # needs a ball that was actually delivered to the batsman.
+        allowed_on_extra = _wickets_allowed_on(inp.extra_type)
         if (
-            inp.extra_type in _ILLEGAL_BALL_EXTRAS
+            allowed_on_extra is not None
             and inp.wicket_type is not None
-            and inp.wicket_type not in _WICKETS_OFF_EXTRA
+            and inp.wicket_type not in allowed_on_extra
         ):
             label = inp.extra_type.value.replace("_", " ")
+            allowed = ", ".join(w.value.replace("_", " ") for w in allowed_on_extra)
             raise InvalidDeliveryError(
-                f"only a run out can be recorded on a {label}, not {inp.wicket_type.value}"
+                f"only a {allowed} can be recorded on a {label}, not {inp.wicket_type.value}"
             )
-        # A bowler bowls a full over; the next over must be bowled by someone
-        # else. Only enforced on the first ball of an over.
-        if state.balls_in_over == 0 and state.last_over_bowler is not None:
-            if inp.bowler_id == state.last_over_bowler:
-                raise InvalidDeliveryError("a bowler cannot bowl two consecutive overs")
-        # A single bowler cannot bowl more than the format's per-player limit
-        # (T20: 4 overs, ODI: 10). Enforced on every ball so a bowler cannot
-        # even start the over that would exceed the limit.
-        if max_over_limit is not None:
-            max_balls = max_over_limit * 6
-            if state.bowler_balls.get(inp.bowler_id, 0) >= max_balls:
-                raise InvalidDeliveryError(f"bowler has bowled the maximum {max_over_limit} overs")
+        # Law 37.3 - wilful obstruction or distraction that prevented a catch.
+        # It is given as obstructing the field (never as a catch), the bowler
+        # is not credited with it, and it cannot happen on a no ball, where the
+        # Law does not apply.
+        if inp.obstruction_prevented_catch:
+            if inp.wicket_type is not WicketType.OBSTRUCTING_THE_FIELD:
+                raise InvalidDeliveryError(
+                    "obstruction that prevents a catch is recorded as "
+                    "obstructing the field, not as a catch"
+                )
+            if inp.extra_type is ExtraType.NO_BALL:
+                raise InvalidDeliveryError(
+                    "obstruction that prevents a catch cannot be given on a no ball"
+                )
+        if inp.extra_type != ExtraType.DEAD_BALL:
+            # A bowler bowls a full over; the next over must be bowled by
+            # someone else. Only enforced on the first ball of an over. A dead
+            # ball shares the slot with the next real delivery, so it must not
+            # trip these checks.
+            if state.balls_in_over == 0 and state.last_over_bowler is not None:
+                if inp.bowler_id == state.last_over_bowler:
+                    raise InvalidDeliveryError("a bowler cannot bowl two consecutive overs")
+            # A single bowler cannot bowl more than the format's per-player
+            # limit (T20: 4 overs, ODI: 10). Enforced on every ball so a bowler
+            # cannot even start the over that would exceed the limit.
+            if max_over_limit is not None:
+                max_balls = max_over_limit * 6
+                if state.bowler_balls.get(inp.bowler_id, 0) >= max_balls:
+                    raise InvalidDeliveryError(
+                        f"bowler has bowled the maximum {max_over_limit} overs"
+                    )
 
     @staticmethod
     def _max_over_per_player(match, innings) -> int | None:
@@ -871,10 +1378,16 @@ class ScoreEngine:
                 break
 
             # The runs the batters actually completed decide whether the ends
-            # change. This is NOT always the team total: a wide/bye/leg-bye
-            # awards no runs to the striker, and the penalty run of a no-ball
-            # is a dead ball the batters never ran.
-            crossed = self._completed_runs(extra, d.runs_batsman, d.runs_extras) % 2 == 1
+            # change. This is NOT the team total: the penalty runs of a wide or
+            # a no ball, and any boundary allowance, are runs nobody ran, so
+            # they are already out of ``completed_runs``. A delivery recorded
+            # with an explicit ``batters_crossed`` - the scorer's answer at the
+            # instant a wicket fell - overrides the parity.
+            comp = delivery_components(d)
+            crossed_value = getattr(d, "batters_crossed", None)
+            crossed = (
+                bool(crossed_value) if crossed_value is not None else comp.completed_runs % 2 == 1
+            )
 
             wicket = self._normalize_wicket(d)
             if wicket:
@@ -884,11 +1397,17 @@ class ScoreEngine:
                     )
                 state.wickets += 1
                 state.dismissed.add(d.dismissed_player_id)
-                # Odd completed runs mean the batters crossed for those runs
-                # BEFORE the dismissal, so the striker/non-striker roles must be
-                # swapped FIRST. Otherwise the incoming batsman is sent to the
-                # wrong end and the striker who ran the odd run stays on strike.
-                if crossed:
+                # Crossing decides the ends ONLY for the dismissals where it is
+                # a fact of the wicket - a run out (the batter out is the one
+                # whose ground was broken, Law 38.4) and obstruction. For a
+                # striker-only dismissal (bowled, caught, LBW, stumped, hit
+                # wicket, hit the ball twice) the Law sends the not-out batter
+                # back to their ORIGINAL end - since October 2022 the incoming
+                # batter always takes the end the striker was at, regardless of
+                # whether the pair had crossed. Swapping first would strand the
+                # survivor at the striker's end and send the new batter in
+                # against the strike.
+                if crossed and wicket not in STRIKER_ONLY_WICKETS:
                     state.striker, state.non_striker = state.non_striker, state.striker
                 if self._wickets_remaining(innings, state):
                     # The scorer chooses who comes in. The slot is left genuinely
@@ -949,27 +1468,6 @@ class ScoreEngine:
         """
         limit = _SUPER_OVER_WICKETS if innings.is_super_over else _NORMAL_INNINGS_WICKETS
         return state.wickets < limit
-
-    @staticmethod
-    def _completed_runs(extra: ExtraType, runs_batsman: int, runs_extras: int) -> int:
-        """Runs the batters actually completed on this delivery.
-
-        This drives the change of ends and is deliberately NOT the team total:
-
-        - ``none`` / ``no_ball``: the no-ball penalty is a dead ball the batters
-          never ran, so only the runs off the bat were completed.
-        - ``bye`` / ``leg_bye``: the striker scores none of these, but the
-          batters did run, so the recorded extras are the completed runs.
-        - ``wide``: the FIRST extra run is the wide penalty itself, which the
-          batters never ran. Anything beyond it (chasing down a wide, a bye off
-          the bat) was run by the batters. So a plain ``1wd`` completes 0 runs
-          and does not change the ends.
-        """
-        if extra is ExtraType.WIDE:
-            return max(0, runs_extras - 1)
-        if extra in (ExtraType.BYE, ExtraType.LEG_BYE):
-            return runs_extras
-        return runs_batsman
 
     @staticmethod
     def _end_reason(innings, match, state: _ReplayState):

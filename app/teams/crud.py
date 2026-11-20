@@ -5,12 +5,17 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.enums import XIRole
 from app.players.identity import full_name, mask_mobile
 from app.team_owners.models import TeamOwnership
 from app.teams.models import PlayerTeamAssignment, Team
-from app.teams.schemas import SquadPlayer, TeamCreate, TeamUpdate
+from app.teams.schemas import PlayingXISet, SquadPlayer, TeamCreate, TeamUpdate, XIPlayerPick
 
 MAX_SQUAD_SIZE = 15
+# Duplicated from app.players.crud the same way MAX_SQUAD_SIZE is: a side
+# fields eleven, and this is the count both the XI picker and its validator
+# are measured against.
+PLAYING_XI_SIZE = 11
 
 
 def _squad_row(a: PlayerTeamAssignment) -> SquadPlayer:
@@ -31,6 +36,7 @@ def _squad_row(a: PlayerTeamAssignment) -> SquadPlayer:
         full_name=f"{player.first_name} {player.last_name}".strip(),
         profile_image=player.profile_image,
         role=a.role,
+        xi_role=a.xi_role,
         mobile_number=mask_mobile(player.country_code, player.mobile_number),
         is_phone_verified=bool(player.is_phone_verified),
         is_captain=bool(a.is_captain),
@@ -122,6 +128,89 @@ async def set_team_captains(
         named.append(f"vice-captain: player {vice_captain_player_id}")
     return (captain_player_id, vice_captain_player_id), (
         f"Updated {' and '.join(named)}" if named else "Cleared the captain and vice-captain"
+    )
+
+
+def _check_xi_composition(picks: list[XIPlayerPick]) -> str | None:
+    """Validate the eleven as one unit, or return the reason they are not one.
+
+    Checked before any write, so a pick that fails here leaves the stored XI
+    exactly as it was - there is no state where ten players were swapped in
+    and the rejection noticed the eleventh.
+
+    A cricket side fields exactly 11: one wicketkeeper, one bowler (the one
+    bowling at a time), and nine other fielders placing themselves. Those
+    three numbers are the whole rule, which is why they are checked here
+    rather than left to the picker to get right.
+    """
+    if len(picks) != PLAYING_XI_SIZE:
+        return f"A playing XI is exactly {PLAYING_XI_SIZE} players; you picked {len(picks)}."
+    ids = [p.player_id for p in picks]
+    if len(set(ids)) != len(ids):
+        return "The same player cannot be picked twice in one XI."
+    keepers = sum(1 for p in picks if p.xi_role == XIRole.WICKETKEEPER)
+    if keepers != 1:
+        return f"A playing XI needs exactly one wicketkeeper; you picked {keepers}."
+    bowlers = sum(1 for p in picks if p.xi_role == XIRole.BOWLER)
+    if bowlers != 1:
+        return f"A playing XI needs exactly one bowler; you picked {bowlers}."
+    fielders = sum(1 for p in picks if p.xi_role == XIRole.FIELDER)
+    if fielders != PLAYING_XI_SIZE - 2:
+        return f"A playing XI needs {PLAYING_XI_SIZE - 2} other fielders; you picked {fielders}."
+    return None
+
+
+async def set_playing_xi(
+    db: AsyncSession, team_id: int, data: PlayingXISet, user_id: int
+) -> tuple[dict | None, str]:
+    """Replace this team's playing XI with the eleven picked, jobs and all.
+
+    Returns ``(squad, message)`` in the shape ``set_team_captains`` uses:
+    ``None`` with the reason when nothing was written, the refreshed squad
+    with a summary when it was. As with captaincy, the caller answers 404
+    from its own ownership check and every failure below is a 400 - they are
+    all "well formed, but not a legal XI".
+
+    The whole XI arrives in one request and is validated as a unit, because
+    composition is a property of all eleven together: no ordering of
+    single-player edits can tell you the side has two keepers until the
+    second one lands. Only rows on this team's own squad are ever touched -
+    being picked is not how a player joins a club. Picked players become
+    ``playing_11`` with their field job recorded; anyone already in the XI
+    who was not picked drops to ``substitute`` and their job is cleared, so
+    the stored XI is always exactly what was sent.
+    """
+    team = await db.execute(select(Team).where(Team.id == team_id, Team.user_id == user_id))
+    if team.scalar_one_or_none() is None:
+        return None, "Team not found"
+
+    composition = _check_xi_composition(data.players)
+    if composition is not None:
+        return None, composition
+
+    picked = {p.player_id: p.xi_role.value for p in data.players}
+    rows = await db.execute(
+        select(PlayerTeamAssignment).where(PlayerTeamAssignment.team_id == team_id)
+    )
+    assignments = {a.player_id: a for a in rows.scalars().all()}
+    missing = [pid for pid in picked if pid not in assignments]
+    if missing:
+        return None, f"Player {missing[0]} is not on this team's squad"
+
+    for pid, assignment in assignments.items():
+        if pid in picked:
+            assignment.role = "playing_11"
+            assignment.xi_role = picked[pid]
+        elif assignment.role == "playing_11":
+            assignment.role = "substitute"
+            assignment.xi_role = None
+
+    await db.commit()
+
+    squad = await get_team_squad(db, team_id, user_id)
+    return squad, (
+        f"Playing XI set: {PLAYING_XI_SIZE} players "
+        f"(1 wicketkeeper, 1 bowler, {PLAYING_XI_SIZE - 2} fielders)"
     )
 
 

@@ -215,6 +215,240 @@ def test_wicket_next_batsman_on_strike():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "order_ids, striker, non_striker",
+    [
+        ([1, 2, 3], 1, 2),  # striker listed first
+        ([2, 1, 3], 2, 1),  # striker listed second
+    ],
+)
+def test_caught_dismisses_the_delivery_striker_not_the_other_batter(
+    order_ids, striker, non_striker
+):
+    """A caught dismissal always removes the batter who faced the ball.
+
+    The payload deliberately names the NON-striker as the dismissed player -
+    the exact stale-picker bug that recorded the wicket against the wrong end.
+    The delivery's ``striker_id`` snapshot must win.
+    """
+
+    async def scenario():
+        engine, _ = make_fake(order_ids)
+        record = await ball(
+            engine,
+            striker,
+            non_striker,
+            wicket_type=WicketType.CAUGHT,
+            dismissed_player_id=non_striker,
+        )
+        assert record.dismissed_player_id == striker
+
+        card = await engine.get_scorecard(7)
+        by_id = {b.player_id: b for b in card.batsmen}
+        assert by_id[striker].out is True
+        assert by_id[striker].dismissal == WicketType.CAUGHT.value
+        assert by_id[non_striker].out is False
+        # The striker's end is vacant; the non-striker is still there.
+        assert card.striker_id is None
+        assert card.non_striker_id == non_striker
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "dismissed_slot, expected_crease",
+    [
+        ("striker", (None, 2)),
+        ("non_striker", (1, None)),
+    ],
+)
+def test_run_out_respects_the_end_the_scorer_selected(dismissed_slot, expected_crease):
+    """A run out is the one dismissal where either batter may be out."""
+
+    async def scenario():
+        engine, _ = make_fake([1, 2, 3, 4])
+        dismissed = 1 if dismissed_slot == "striker" else 2
+        await ball(engine, 1, 2, wicket_type=WicketType.RUN_OUT, dismissed_player_id=dismissed)
+
+        card = await engine.get_scorecard(7)
+        by_id = {b.player_id: b for b in card.batsmen}
+        assert by_id[dismissed].out is True
+        assert by_id[1 if dismissed == 2 else 2].out is False
+        assert (card.striker_id, card.non_striker_id) == expected_crease
+
+    asyncio.run(scenario())
+
+
+def test_scorecard_refresh_rebuilds_the_crease_and_dismissal_from_the_log():
+    """A page refresh replays the same delivery log; it cannot lose the wicket."""
+
+    async def scenario():
+        engine, repo = make_fake([1, 2, 3, 4])
+        await ball(engine, 1, 2, runs_batsman=1)  # ends change: 2 is on strike
+        await ball(
+            engine,
+            2,
+            1,
+            wicket_type=WicketType.CAUGHT,
+            dismissed_player_id=2,
+        )
+
+        # A new engine over the same persisted deliveries is what happens on
+        # reload / GET /scorecard.
+        refreshed = ScoreEngine(repo)
+        card = await refreshed.get_scorecard(7)
+        by_id = {b.player_id: b for b in card.batsmen}
+        assert card.wickets == 1
+        assert by_id[2].out is True
+        assert by_id[2].dismissal == WicketType.CAUGHT.value
+        assert by_id[1].out is False
+        assert (card.striker_id, card.non_striker_id) == (None, 1)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "wicket",
+    [
+        WicketType.BOWLED,
+        WicketType.LBW,
+        WicketType.STUMPED,
+        WicketType.HIT_WICKET,
+        WicketType.HIT_THE_BALL_TWICE,
+    ],
+)
+def test_striker_only_wickets_always_dismiss_the_delivery_striker(wicket):
+    """Tests 2, 3, 4, 7 and 8: the striker snapshot outranks the payload.
+
+    Player 2 is the striker even though the order lists player 1 first, and the
+    payload deliberately names player 1 (the non-striker). Every striker-only
+    dismissal must still remove player 2.
+    """
+
+    async def scenario():
+        engine, _ = make_fake([2, 1, 3, 4])
+        record = await ball(
+            engine,
+            2,
+            1,
+            wicket_type=wicket,
+            dismissed_player_id=1,
+        )
+        assert record.dismissed_player_id == 2
+
+        card = await engine.get_scorecard(7)
+        by_id = {b.player_id: b for b in card.batsmen}
+        assert by_id[2].out is True
+        assert by_id[2].dismissal == wicket.value
+        assert by_id[1].out is False
+        assert (card.striker_id, card.non_striker_id) == (None, 1)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "dismissed_slot, expected_crease",
+    [
+        ("striker", (None, 2)),
+        ("non_striker", (1, None)),
+    ],
+)
+def test_obstructing_the_field_lets_the_scorer_choose_the_batter(dismissed_slot, expected_crease):
+    async def scenario():
+        engine, _ = make_fake([1, 2, 3, 4])
+        dismissed = 1 if dismissed_slot == "striker" else 2
+        record = await ball(
+            engine,
+            1,
+            2,
+            wicket_type=WicketType.OBSTRUCTING_THE_FIELD,
+            dismissed_player_id=dismissed,
+        )
+        assert record.dismissed_player_id == dismissed
+
+        card = await engine.get_scorecard(7)
+        by_id = {b.player_id: b for b in card.batsmen}
+        assert by_id[dismissed].out is True
+        assert by_id[2 if dismissed == 1 else 1].out is False
+        assert (card.striker_id, card.non_striker_id) == expected_crease
+        # Obstruction is never the bowler's wicket.
+        assert all(b.wickets == 0 for b in card.bowlers)
+
+    asyncio.run(scenario())
+
+
+def test_retired_out_is_a_dead_ball_with_no_ball_or_bowler_credit():
+    async def scenario():
+        engine, _ = make_fake([1, 2, 3, 4])
+        record = await ball(
+            engine,
+            1,
+            2,
+            extra_type=ExtraType.DEAD_BALL,
+            wicket_type=WicketType.RETIRED_OUT,
+            dismissed_player_id=2,
+        )
+        # The event shares the slot of the next real delivery.
+        assert (record.over_number, record.ball_number) == (1, 1)
+
+        card = await engine.get_scorecard(7)
+        by_id = {b.player_id: b for b in card.batsmen}
+        assert card.total == 0
+        assert card.legal_balls == 0
+        assert card.overs_bowled_str == "0.0"
+        assert card.wickets == 1
+        assert by_id[2].out is True
+        assert by_id[2].dismissal == WicketType.RETIRED_OUT.value
+        assert by_id[1].out is False
+        # No bowler bowled, so there is no bowling figure to credit or blame.
+        assert card.bowlers == []
+        assert (card.striker_id, card.non_striker_id) == (1, None)
+
+        # The next real ball is still the first ball of the over.
+        following = await ball(engine, 1, 3)
+        assert (following.over_number, following.ball_number) == (1, 1)
+
+    asyncio.run(scenario())
+
+
+def test_timed_out_dismisses_the_incoming_batter_not_the_survivor():
+    async def scenario():
+        engine, _ = make_fake([1, 2, 3, 4])
+        await ball(engine, 1, 2, wicket_type=WicketType.CAUGHT, dismissed_player_id=1)
+
+        card = await engine.get_scorecard(7)
+        assert (card.striker_id, card.non_striker_id) == (None, 2)
+
+        # The scorer sends player 3 to the vacant striker end, then records the
+        # timed out before a ball is bowled. Player 2 (the survivor) must stay in.
+        record = await ball(
+            engine,
+            3,
+            2,
+            extra_type=ExtraType.DEAD_BALL,
+            wicket_type=WicketType.TIMED_OUT,
+            dismissed_player_id=3,
+        )
+        assert record.dismissed_player_id == 3
+
+        card = await engine.get_scorecard(7)
+        by_id = {b.player_id: b for b in card.batsmen}
+        assert card.wickets == 2
+        assert by_id[3].out is True
+        assert by_id[3].dismissal == WicketType.TIMED_OUT.value
+        assert by_id[2].out is False
+        assert by_id[1].out is True  # the earlier caught opener
+        assert card.legal_balls == 1  # only the caught delivery, never the dead ball
+        assert (card.striker_id, card.non_striker_id) == (None, 2)
+
+        # The next incoming batter fills the vacant end, not the survivor's.
+        await ball(engine, 4, 2)
+        card = await engine.get_scorecard(7)
+        assert (card.striker_id, card.non_striker_id) == (4, 2)
+
+    asyncio.run(scenario())
+
+
 def test_non_striker_out_keeps_striker_on_strike():
     async def scenario():
         engine, _ = make_fake([1, 2, 3, 4])
@@ -236,8 +470,14 @@ def test_over_completion_swaps_ends():
         engine, _ = make_fake([1, 2, 3])
         for _ in range(5):
             await ball(engine, 1, 2)
+        card_before = await engine.get_scorecard(7)
+        assert (card_before.striker_id, card_before.non_striker_id) == (1, 2)
         d6 = await ball(engine, 1, 2)
         assert (d6.over_number, d6.ball_number) == (1, 6)
+        card_after = await engine.get_scorecard(7)
+        # The over's end changes the ends exactly once, so the non-striker is
+        # on strike for the next over.
+        assert (card_after.striker_id, card_after.non_striker_id) == (2, 1)
         await ball(engine, 2, 1, bowler_id=300)
 
     asyncio.run(scenario())
@@ -515,7 +755,7 @@ def test_order_exhaustion_leaves_a_vacant_slot_not_a_finished_innings():
 
     async def scenario():
         engine, repo = make_fake([1, 2])
-        await ball(engine, 1, 2, wicket_type=WicketType.BOWLED, dismissed_player_id=2)
+        await ball(engine, 1, 2, wicket_type=WicketType.RUN_OUT, dismissed_player_id=2)
 
         card = await engine.get_scorecard(7)
         assert card.completed is False
@@ -729,7 +969,7 @@ def test_vacancy_fill_must_be_a_player_in_the_batting_order():
 def test_manual_pick_resumes_the_innings():
     async def scenario():
         engine, repo = make_fake([1, 2])
-        await ball(engine, 1, 2, wicket_type=WicketType.BOWLED, dismissed_player_id=2)
+        await ball(engine, 1, 2, wicket_type=WicketType.RUN_OUT, dismissed_player_id=2)
 
         repo.order.append(FakeBatsman(player_id=3, position=3))
         repo.innings.next_batsman_id = 3

@@ -67,6 +67,29 @@ def _error_response(description: str, schema_ref: str) -> dict[str, Any]:
     }
 
 
+def _response_only_schemas() -> dict[str, Any]:
+    """Components for models that appear only inside hand-written ``responses=``.
+
+    ``get_openapi`` collects components from the Pydantic models it serialises
+    itself - response models, request bodies, parameters. A model that is
+    referenced solely by a raw ``{"$ref": ...}`` in a responses dict is invisible
+    to that walk, so it never reaches ``components.schemas`` and every resolver
+    (Swagger UI first) reports "Could not resolve reference".
+
+    ``ErrorResponse`` and ``DuplicatePlayerConflict`` are exactly that case, which
+    is why they are registered here. ``$defs`` is lifted to component level
+    because Pydantic nests the schema of every model a model refers to; leaving
+    it inline would put the refs under a key no OpenAPI resolver reads.
+    """
+    schemas: dict[str, Any] = {}
+    for model in (ErrorResponse, DuplicatePlayerConflict):
+        model_schema = model.model_json_schema(ref_template="#/components/schemas/{model}")
+        for name, definition in model_schema.pop("$defs", {}).items():
+            schemas.setdefault(name, definition)
+        schemas.setdefault(model.__name__, model_schema)
+    return schemas
+
+
 _ERROR = "#/components/schemas/ErrorResponse"
 
 # The failures that every secured operation can produce. Kept as ready-made
@@ -239,6 +262,13 @@ OPENAPI_TAGS: list[dict[str, Any]] = [
     },
     {"name": "scoring", "description": "Live scoring: innings, deliveries and scorecards."},
     {
+        "name": "fielding",
+        "description": (
+            "Match-level field setup: the fielding side's designated "
+            "wicketkeeper and where each fielder stands, per innings."
+        ),
+    },
+    {
         "name": "tournaments",
         "description": "Competitions: teams, fixtures, points table and leaderboards.",
     },
@@ -338,6 +368,11 @@ def install_openapi(app: FastAPI) -> None:
             tags=OPENAPI_TAGS,
             servers=openapi_servers(),
         )
+        # Models used only as raw "$ref" strings in responses= are not discovered
+        # by get_openapi, so add them before anything resolves the document.
+        components = schema.setdefault("components", {}).setdefault("schemas", {})
+        for name, model_schema in _response_only_schemas().items():
+            components.setdefault(name, model_schema)
         _add_implied_errors(app, schema)
         app.openapi_schema = schema
         return schema

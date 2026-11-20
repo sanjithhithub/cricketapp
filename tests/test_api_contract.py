@@ -234,6 +234,36 @@ def test_conflict_is_documented_where_a_duplicate_is_refused(schema):
     assert "409" in create_team["responses"]
 
 
+def test_every_schema_reference_resolves(schema):
+    """A dangling $ref breaks the whole document, not just the one response.
+
+    Swagger UI refuses to render an operation whose response points at a missing
+    component, which is how a model used solely from a hand-written ``responses=``
+    dict made every 400 and 401 unreadable. FastAPI only emits components for
+    models it serialises itself, so those are registered explicitly.
+    """
+
+    def refs(node):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "$ref" and isinstance(value, str):
+                    yield value
+                else:
+                    yield from refs(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from refs(value)
+
+    components = schema["components"]["schemas"]
+    dangling = sorted(
+        ref
+        for ref in set(refs(schema))
+        if ref.startswith("#/components/schemas/") and ref.rsplit("/", 1)[1] not in components
+    )
+    assert dangling == []
+    assert {"ErrorResponse", "DuplicatePlayerConflict"} <= components.keys()
+
+
 def test_a_duplicate_carries_the_structured_payload(client, as_user, refs):
     """The 409 documented above is the one the server sends.
 
