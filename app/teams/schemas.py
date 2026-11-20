@@ -2,7 +2,7 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.enums import SquadRole, coerce_enum
+from app.enums import SquadRole, XIRole, coerce_enum
 from app.players.schemas import PlayerTeamInfo
 from app.team_owners.schemas import TeamOwnerOnTeam
 
@@ -147,6 +147,38 @@ class PlayerBulkAssignResponse(BaseModel):
     added_player_ids: list[int]
 
 
+class XIPlayerPick(BaseModel):
+    """One slot in the requested playing XI: the player and their field job.
+
+    Ids, not names, because a name is not a handle in this app. The job is
+    part of the pick rather than a separate call, so the server can validate
+    the composition of all eleven at once instead of accepting a half-built
+    XI and failing later.
+    """
+
+    player_id: int = Field(..., gt=0)
+    xi_role: XIRole
+
+    @field_validator("xi_role", mode="before")
+    @classmethod
+    def validate_xi_role(cls, v):
+        return coerce_enum(XIRole, v)
+
+
+class PlayingXISet(BaseModel):
+    """The eleven a team sends onto the field, and what each one does.
+
+    The whole XI is sent, not a diff: the server checks the composition of
+    the request as a unit - exactly eleven players, exactly one wicketkeeper,
+    exactly one bowler and nine fielders - before writing anything, so a
+    rejected pick never leaves a partly-changed XI behind. Players already on
+    the squad who are not picked drop to substitutes; nobody is added to or
+    removed from the squad by this call.
+    """
+
+    players: list[XIPlayerPick]
+
+
 class SquadPlayer(BaseModel):
     id: int
     player_code: str = ""
@@ -155,6 +187,12 @@ class SquadPlayer(BaseModel):
     full_name: str = ""
     profile_image: str | None = None
     role: SquadRole
+    # The player's job inside the XI - wicketkeeper, bowler or fielder - or
+    # null when they are not in the XI (or were picked before jobs were
+    # recorded). It rides on the squad row so every picker can label a player
+    # without a second request, and so the XI screen can show which slot is
+    # still unfilled.
+    xi_role: XIRole | None = None
     # Masked, not raw: a squad is a dropdown, and a dropdown is where a scorer
     # has to tell two same-named players apart. The last two digits are the part
     # that separates them. The full number stays on the player record, which is

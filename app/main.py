@@ -1,7 +1,7 @@
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -26,6 +26,7 @@ from app.crud import (
     verify_otp_code,
 )
 from app.database import DATABASE_URL, Base, engine, get_db
+from app.fielding.routes import router as fielding_router
 from app.leaderboards.routes import router as leaderboards_router
 from app.levels.routes import router as levels_router
 from app.matches.routes import router as matches_router
@@ -50,18 +51,34 @@ from app.visualization.routes import router as visualization_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    """Create tables on SQLite, seed reference data, then run.
+    """Bring SQLite up to date, seed reference data, then run.
 
     Replaces the deprecated ``@app.on_event`` hooks: the context manager form
     is what FastAPI moved to, and it guarantees the shutdown body runs even when
     startup fails halfway - the engine is disposed either way.
 
-    ``create_all`` runs only on SQLite. Postgres is managed by Alembic
+    SQLite is upgraded with Alembic when the database already has an
+    ``alembic_version`` row (i.e. it was migrated before), because
+    ``Base.metadata.create_all`` only ever creates MISSING TABLES: it never
+    adds a column to a table that already exists. A database left behind by a
+    new migration therefore used to boot "successfully" and then 500 on every
+    query naming the new column - which is exactly how the scoring console
+    died on ``deliveries.runs_wides``. A database that has never been
+    migrated (fresh file, or built by ``create_all`` alone) keeps the old
+    behaviour: the chain cannot run against pre-existing unguarded tables
+    (see tests/test_migrations.py), so ``create_all`` builds it instead.
+
+    Postgres is managed by Alembic
     (``docker-entrypoint.sh`` runs ``alembic upgrade head`` before uvicorn), so
     creating tables here would paper over a missing migration instead of
     failing loudly on deploy.
     """
     if DATABASE_URL.startswith("sqlite"):
+        if await _has_alembic_version():
+            # A migrated database: apply anything the code expects but the
+            # file does not have yet. Fails loudly on a broken chain rather
+            # than serving 500s at request time.
+            _upgrade_sqlite_to_head()
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
     async for db in get_db():
@@ -70,6 +87,40 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         break
     yield
     await engine.dispose()
+
+
+async def _has_alembic_version() -> bool:
+    """True when this database is tracked by Alembic (has been migrated)."""
+    from sqlalchemy import inspect
+
+    async with engine.connect() as conn:
+        return await conn.run_sync(
+            lambda sync_conn: inspect(sync_conn).has_table("alembic_version")
+        )
+
+
+def _upgrade_sqlite_to_head() -> None:
+    """Run ``alembic upgrade head`` in-process against DATABASE_URL.
+
+    Runs synchronously: startup already blocks on ``create_all`` and seeding,
+    and this happens before the first request. The alembic env.py reads
+    ``DATABASE_URL`` from the environment, which is exactly the database the
+    app itself is using.
+    """
+    from alembic.config import Config
+
+    from alembic import command
+
+    root = Path(__file__).resolve().parents[1]
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "alembic"))
+    # Do not let alembic reconfigure logging: fileConfig() would clear the
+    # handlers uvicorn already installed and silence request logging.
+    cfg.attributes["configure_logging"] = False
+    # env.py overrides the URL from the environment; make sure it is set even
+    # when the app fell back to the default in database.py.
+    os.environ.setdefault("DATABASE_URL", DATABASE_URL)
+    command.upgrade(cfg, "head")
 
 
 app = FastAPI(
@@ -213,6 +264,7 @@ routers = [
     (referees_router, [Depends(get_current_user)]),
     (team_owners_router, [Depends(get_current_user)]),
     (scoring_router, [Depends(get_current_user)]),
+    (fielding_router, [Depends(get_current_user)]),
     (tournaments_router, [Depends(get_current_user)]),
     (leaderboards_router, [Depends(get_current_user)]),
     (visualization_router, [Depends(get_current_user)]),

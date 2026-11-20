@@ -32,6 +32,7 @@ import sys
 from sqlalchemy import create_engine, inspect
 
 import app.auth.models  # noqa: F401
+import app.fielding.models  # noqa: F401
 import app.levels.models  # noqa: F401
 import app.matches.models  # noqa: F401
 import app.models  # noqa: F401

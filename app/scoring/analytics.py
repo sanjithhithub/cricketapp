@@ -22,11 +22,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.matches.models import Match
 from app.scoring.crud import ScoringRepository
-from app.scoring.engine import max_overs_for
+from app.scoring.engine import delivery_components, max_overs_for
 from app.scoring.enums import ExtraType
 from app.scoring.models import Innings
 
-_ILLEGAL_BALL_EXTRAS = (ExtraType.WIDE.value, ExtraType.NO_BALL.value)
+_ILLEGAL_BALL_EXTRAS = (
+    ExtraType.WIDE.value,
+    ExtraType.NO_BALL.value,
+    ExtraType.DEAD_BALL.value,
+)
 
 
 def _extra(delivery) -> str:
@@ -114,6 +118,7 @@ def build_innings_analytics(
     seen_overs: set[int] = set()
 
     extras = {"wides": 0, "no_balls": 0, "byes": 0, "leg_byes": 0}
+    penalty_runs = 0
     pattern = {
         "deliveries": 0,
         "legal_balls": 0,
@@ -129,6 +134,7 @@ def build_innings_analytics(
     for d in deliveries:
         extra = _extra(d)
         wicket = _wicket(d)
+        comp = delivery_components(d)
         count_wicket = wicket is not None and d.id != winning_id
         runs = d.runs_batsman + d.runs_extras
         is_legal = extra not in _ILLEGAL_BALL_EXTRAS
@@ -155,10 +161,13 @@ def build_innings_analytics(
         over_fours[d.over_number] = over_fours.get(d.over_number, 0) + (1 if is_four else 0)
         over_sixes[d.over_number] = over_sixes.get(d.over_number, 0) + (1 if is_six else 0)
         over_dots[d.over_number] = over_dots.get(d.over_number, 0) + (1 if is_dot else 0)
-        if d.over_number not in over_bowler:
+        if extra != ExtraType.DEAD_BALL.value and d.over_number not in over_bowler:
             over_bowler[d.over_number] = d.bowler_id
 
-        pattern["deliveries"] += 1
+        # A dead ball is a dismissal between deliveries, not a delivery: it
+        # must not inflate the scoring pattern's delivery count.
+        if extra != ExtraType.DEAD_BALL.value:
+            pattern["deliveries"] += 1
         if is_legal:
             pattern["legal_balls"] += 1
         if is_dot:
@@ -176,13 +185,21 @@ def build_innings_analytics(
             pattern["sixes"] += 1
 
         if extra == ExtraType.WIDE.value:
-            extras["wides"] += d.runs_extras
+            extras["wides"] += comp.wides
         elif extra == ExtraType.NO_BALL.value:
-            extras["no_balls"] += d.runs_extras
+            extras["no_balls"] += comp.no_balls
+            # A no ball may also carry byes / leg byes struck off it; those
+            # belong in their own columns, never in the no-ball column.
+            extras["byes"] += comp.byes
+            extras["leg_byes"] += comp.leg_byes
         elif extra == ExtraType.BYE.value:
-            extras["byes"] += d.runs_extras
+            extras["byes"] += comp.byes
         elif extra == ExtraType.LEG_BYE.value:
-            extras["leg_byes"] += d.runs_extras
+            extras["leg_byes"] += comp.leg_byes
+        # Wide / no-ball penalty runs are already inside comp.wides /
+        # comp.no_balls. Standalone Law 28 penalties land here: they are not
+        # one of the four named extras, so they are folded into the total only.
+        penalty_runs += comp.penalty_runs
 
         events.append(
             {
@@ -282,13 +299,23 @@ def build_innings_analytics(
             "no_balls": extras["no_balls"],
             "byes": extras["byes"],
             "leg_byes": extras["leg_byes"],
-            "total": extras["wides"] + extras["no_balls"] + extras["byes"] + extras["leg_byes"],
+            # The four named extras plus any Law 28 penalty runs, which are
+            # not one of the four and so have no key of their own - but they
+            # are runs that did not come off the bat, so the total must carry
+            # them for the breakdown to add up to the innings extras.
+            "total": (
+                extras["wides"]
+                + extras["no_balls"]
+                + extras["byes"]
+                + extras["leg_byes"]
+                + penalty_runs
+            ),
         },
         "scoring_pattern": {
             **pattern,
             "boundaries": pattern["fours"] + pattern["sixes"],
             "boundary_runs": pattern["fours"] * 4 + pattern["sixes"] * 6,
-            "extras": sum(extras.values()),
+            "extras": sum(extras.values()) + penalty_runs,
         },
         "deliveries": events,
         "over_by_over": over_by_over,

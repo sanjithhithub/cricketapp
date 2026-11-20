@@ -80,6 +80,21 @@ class ScoringRepository:
             wicket_type=record.wicket_type,
             dismissed_player_id=record.dismissed_player_id,
             fielder_id=record.fielder_id,
+            # The run components as the engine resolved them. Storing the
+            # resolution (rather than only the inputs) is what lets a later
+            # reader - replay, analytics, a scorecard - see exactly what the
+            # umpire was shown, including an explicit "the batters had crossed"
+            # answer that would otherwise be re-guessed from parity.
+            runs_wides=record.runs_wides,
+            runs_no_balls=record.runs_no_balls,
+            runs_byes=record.runs_byes,
+            runs_leg_byes=record.runs_leg_byes,
+            runs_penalty=record.runs_penalty,
+            completed_runs=record.completed_runs,
+            boundary_runs=record.boundary_runs,
+            total_team_runs=record.total_team_runs,
+            batters_crossed=record.batters_crossed,
+            client_request_id=record.client_request_id,
         )
         self.db.add(delivery)
         await self.db.flush()
@@ -111,6 +126,28 @@ async def get_batting_order(db: AsyncSession, innings_id: int):
         .order_by(InningsBatsman.position)
     )
     return result.scalars().all()
+
+
+async def find_delivery_by_client_request(
+    db: AsyncSession, innings_id: int, client_request_id: str
+):
+    """The delivery this idempotency key already recorded, if any.
+
+    A scorer tapping "submit" twice - or a client retrying a request whose
+    response it never saw - must not score the ball twice. The key is scoped to
+    the innings rather than the match so a Super Over (or a second innings)
+    starts with a clean namespace, and it is backed by a unique constraint so
+    two processes racing past this check still cannot both insert.
+    """
+    result = await db.execute(
+        select(Delivery)
+        .where(
+            Delivery.innings_id == innings_id,
+            Delivery.client_request_id == client_request_id,
+        )
+        .order_by(Delivery.id)
+    )
+    return result.scalars().first()
 
 
 async def create_scoring_match(db: AsyncSession, data: MatchCreate):
@@ -378,6 +415,24 @@ async def open_second_innings(db: AsyncSession, match: Match, first_total=None):
 
     existing = await get_innings_by_number(db, match.id, 2)
     if existing is not None:
+        # The row may predate the ball that is completing this innings: an undo
+        # can reopen innings 1 after innings 2 was already created (and even
+        # seeded with a batting order). Refresh the target from the current
+        # first-innings total so the chase never points at a stale score. A
+        # second innings that already has deliveries keeps its target - it was
+        # computed when the chase actually started.
+        existing_deliveries = await db.execute(
+            select(func.count(Delivery.id)).where(Delivery.innings_id == existing.id)
+        )
+        if existing_deliveries.scalar_one() == 0:
+            if first_total is None:
+                first_total_result = await db.execute(
+                    select(
+                        func.coalesce(func.sum(Delivery.runs_batsman + Delivery.runs_extras), 0)
+                    ).where(Delivery.innings_id == first.id)
+                )
+                first_total = first_total_result.scalar_one()
+            existing.target = first_total + 1
         match.current_innings_number = 2
         await db.commit()
         return existing
@@ -653,3 +708,91 @@ async def sync_match_result(db: AsyncSession, match: Match) -> str | None:
         match.result = computed
         await db.commit()
     return match.result
+
+
+async def undo_last_delivery(db: AsyncSession, match: Match):
+    """Remove the match's most recent delivery and reverse the side effects it
+    had outside the append-only delivery log.
+
+    Every scorecard number (team total, batter figures, bowler figures, overs,
+    wickets, strike, the current over and the ball-by-ball history) is REPLAYED
+    from the log, so deleting the last row is the whole statistical undo. Two
+    pieces of state live outside the log and are repaired here:
+
+    - ``innings.next_batsman_id``. A pick made for a vacancy the deletion just
+      erased has to be cleared (on replay it would silently fill a FUTURE
+      vacancy), while a pick the deleted ball had consumed has to be restored,
+      because the vacancy it resolved is open again - otherwise the scorer is
+      asked to pick the same batter twice.
+    - the innings the deleted ball opened. The match is returned to the undone
+      innings: an empty successor row is dropped, a successor the scorer seeded
+      with a batting order is kept as user data, and in both cases
+      ``current_innings_number`` moves back.
+
+    Returns ``(innings, error)``. When ``error`` is set nothing was changed.
+    Completed matches must be rejected by the caller - reopening one would also
+    have to unwind tournament fixture progression and a recorded result.
+    """
+    result = await db.execute(
+        select(Delivery)
+        .join(Innings, Delivery.innings_id == Innings.id)
+        .where(Innings.match_id == match.id)
+        .order_by(Delivery.id.desc())
+        .limit(1)
+    )
+    delivery = result.scalar_one_or_none()
+    if delivery is None:
+        return None, "Nothing to undo - this match has no deliveries"
+
+    innings_result = await db.execute(select(Innings).where(Innings.id == delivery.innings_id))
+    innings = innings_result.scalar_one()
+    was_wicket = delivery.wicket_type is not None
+
+    await db.delete(delivery)
+    await db.flush()
+
+    # Recompute the reopened innings from the log. The engine cache is keyed on
+    # the delivery count, so a fresh engine never sees the deleted ball.
+    engine = ScoreEngine(ScoringRepository(db))
+    card = await engine.get_scorecard(innings.id)
+
+    if card.awaiting_batsman and (card.striker_id is None or card.non_striker_id is None):
+        # The deleted ball resolved this vacancy (a delivery can only be legal
+        # when it fills any open slot), so the crease needs the same batter
+        # back - restoring the pick lets replay close the slot without asking
+        # the scorer to choose him again.
+        vacant_slot = "striker" if card.striker_id is None else "non_striker"
+        incoming = delivery.striker_id if vacant_slot == "striker" else delivery.non_striker_id
+        innings.next_batsman_id = incoming
+    elif was_wicket:
+        # The wicket that justified this pick is gone, so the vacancy it was
+        # chosen for is gone too. Leaving the pick would let it silently fill
+        # the crease slot of some LATER wicket.
+        innings.next_batsman_id = None
+
+    if match.current_innings_number > innings.innings_number:
+        # The undone delivery was what completed this innings and opened the
+        # next one. Walk the successors: rows the engine created empty are
+        # dropped, while a seeded batting order is kept as user data - either
+        # way the match scores again in the innings that was reopened.
+        successors = await db.execute(
+            select(Innings)
+            .where(Innings.match_id == match.id, Innings.innings_number > innings.innings_number)
+            .order_by(Innings.innings_number)
+        )
+        for successor in successors.scalars():
+            ball_count = await db.execute(
+                select(func.count(Delivery.id)).where(Delivery.innings_id == successor.id)
+            )
+            order_count = await db.execute(
+                select(func.count(InningsBatsman.id)).where(
+                    InningsBatsman.innings_id == successor.id
+                )
+            )
+            if ball_count.scalar_one() == 0 and order_count.scalar_one() == 0:
+                await db.delete(successor)
+        match.current_innings_number = innings.innings_number
+
+    await db.commit()
+    await db.refresh(innings)
+    return innings, None

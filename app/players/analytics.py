@@ -30,7 +30,11 @@ from app.scoring.engine import ScoreEngine, ScoreEngineError
 from app.scoring.enums import ExtraType, MatchStatus, WicketType
 from app.scoring.models import Delivery, Innings, InningsBatsman
 
-_ILLEGAL_BALL_EXTRAS = (ExtraType.WIDE.value, ExtraType.NO_BALL.value)
+_ILLEGAL_BALL_EXTRAS = (
+    ExtraType.WIDE.value,
+    ExtraType.NO_BALL.value,
+    ExtraType.DEAD_BALL.value,
+)
 
 # Only these dismissals can be credited to a fielder; bowled, lbw and hit wicket
 # are the bowler's alone.

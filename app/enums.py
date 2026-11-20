@@ -60,6 +60,23 @@ class SquadRole(str, Enum):
     BENCH = "bench"
 
 
+class XIRole(str, Enum):
+    """What a picked player does inside the eleven.
+
+    Separate from ``SquadRole`` for the same reason captaincy is separate:
+    the bucket says *whether* a player takes the field, this says *how*. A
+    cricket side fields exactly one wicketkeeper, sends one bowler at a time
+    and places nine other fielders, so the XI is picked as 1 wicketkeeper +
+    1 bowler + 9 fielders and this is what records that decision. It is only
+    ever set on a row whose bucket is ``playing_11``; a substitute has no
+    field job.
+    """
+
+    WICKETKEEPER = "wicketkeeper"
+    BOWLER = "bowler"
+    FIELDER = "fielder"
+
+
 class MatchType(str, Enum):
     T20 = "T20"
     ODI = "ODI"

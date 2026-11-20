@@ -11,8 +11,13 @@ load_dotenv()
 
 config = context.config
 
-if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+if config.config_file_name is not None and config.attributes.get("configure_logging", True):
+    # disable_existing_loggers=False: this env.py also runs in-process at app
+    # startup (app.main.lifespan upgrades a database that Alembic already
+    # tracks). The default True would disable uvicorn's loggers mid-boot and
+    # silently stop all request logging. CLI runs keep the default behaviour
+    # unless they opt out via config.attributes.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Override DB URL from env if set
 db_url = os.getenv("DATABASE_URL")
@@ -27,6 +32,7 @@ sync_url = re.sub(r"\+aiosqlite", "", sync_url)
 config.set_main_option("sqlalchemy.url", sync_url)
 
 import app.auth.models  # noqa: F401
+import app.fielding.models  # noqa: F401
 import app.levels.models  # noqa: F401
 import app.matches.models  # noqa: F401
 import app.models  # noqa: F401

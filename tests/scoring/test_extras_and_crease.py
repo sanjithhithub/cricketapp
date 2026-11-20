@@ -538,14 +538,25 @@ def test_run_out_on_a_penalty_extra_is_an_illegal_ball_but_counts_the_wicket(
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("extra", [ExtraType.WIDE, ExtraType.NO_BALL])
 @pytest.mark.parametrize(
-    "wicket", [WicketType.BOWLED, WicketType.CAUGHT, WicketType.LBW, WicketType.STUMPED]
+    "extra,wicket",
+    [
+        (ExtraType.WIDE, WicketType.BOWLED),
+        (ExtraType.WIDE, WicketType.CAUGHT),
+        (ExtraType.WIDE, WicketType.LBW),
+        (ExtraType.WIDE, WicketType.HIT_WICKET),
+        (ExtraType.WIDE, WicketType.HIT_THE_BALL_TWICE),
+        (ExtraType.NO_BALL, WicketType.BOWLED),
+        (ExtraType.NO_BALL, WicketType.CAUGHT),
+        (ExtraType.NO_BALL, WicketType.LBW),
+        (ExtraType.NO_BALL, WicketType.STUMPED),
+        (ExtraType.NO_BALL, WicketType.HIT_WICKET),
+    ],
 )
-def test_only_a_run_out_is_allowed_on_a_wide_or_no_ball(extra, wicket):
+def test_penalty_extras_reject_impossible_wickets(extra, wicket):
     async def scenario():
         engine, _ = make([1, 2, 3])
-        with pytest.raises(InvalidDeliveryError, match="only a run out"):
+        with pytest.raises(InvalidDeliveryError, match="only a"):
             await deliver(
                 engine,
                 1,
@@ -555,6 +566,34 @@ def test_only_a_run_out_is_allowed_on_a_wide_or_no_ball(extra, wicket):
                 wicket_type=wicket,
                 dismissed_player_id=1,
             )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "extra,wicket",
+    [
+        (ExtraType.WIDE, WicketType.STUMPED),
+        (ExtraType.NO_BALL, WicketType.HIT_THE_BALL_TWICE),
+    ],
+)
+def test_penalty_extras_accept_the_lawful_wickets(extra, wicket):
+    async def scenario():
+        engine, _ = make([1, 2, 3])
+        record = await deliver(
+            engine,
+            1,
+            2,
+            runs_extras=1,
+            extra_type=extra,
+            wicket_type=wicket,
+            dismissed_player_id=1,
+        )
+        assert record.wicket_type == wicket.value
+        assert record.dismissed_player_id == 1
+        card = await engine.get_scorecard(7)
+        assert next(c for c in card.batsmen if c.player_id == 1).out is True
+        assert card.bowlers[0].wickets == (1 if wicket == WicketType.STUMPED else 0)
 
     asyncio.run(scenario())
 
@@ -673,12 +712,12 @@ def test_crease_is_correct_after_every_delivery_type():
             (0, 2, ExtraType.WIDE, None, None),  # 1 wide + 1 run -> change
             (1, 1, ExtraType.NO_BALL, None, None),  # only the 1 off bat ran
             (0, 1, ExtraType.LEG_BYE, None, None),
-            (0, 0, ExtraType.NONE, WicketType.CAUGHT, 2),
+            (0, 0, ExtraType.NONE, WicketType.CAUGHT, 1),
             (0, 0, ExtraType.NONE, WicketType.RUN_OUT, 3),
         ]
         striker, non_striker = 1, 2
         expected = []
-        # The two wicket steps dismiss 2 then 3, so those are who comes in.
+        # Both wicket steps dismiss the striker, so 3 then 4 come in.
         incoming, replacement_bowler = 3, 201
         for runs_batsman, runs_extras, extra, wicket, dismissed in steps:
             await deliver(
@@ -825,19 +864,34 @@ def test_api_rejects_a_wide_or_no_ball_with_no_extra_run():
     assert DeliveryCreate(**_delivery(extra_type="wide", runs_extras=1)).runs_extras == 1
 
 
-def test_api_allows_only_a_run_out_on_a_wide_or_no_ball():
-    for extra in ("wide", "no_ball"):
-        ok = DeliveryCreate(
-            **_delivery(
-                extra_type=extra,
-                runs_extras=1,
-                wicket_type="run_out",
-                dismissed_player_id=1,
+def test_api_allows_only_the_lawful_wickets_on_a_wide_or_no_ball():
+    wide_allowed = ("run_out", "stumped", "obstructing_the_field")
+    no_ball_allowed = ("run_out", "obstructing_the_field", "hit_the_ball_twice")
+    every = (
+        "bowled",
+        "caught",
+        "lbw",
+        "run_out",
+        "stumped",
+        "hit_wicket",
+        "obstructing_the_field",
+        "hit_the_ball_twice",
+    )
+    for extra, allowed in (("wide", wide_allowed), ("no_ball", no_ball_allowed)):
+        for wicket in allowed:
+            ok = DeliveryCreate(
+                **_delivery(
+                    extra_type=extra,
+                    runs_extras=1,
+                    wicket_type=wicket,
+                    dismissed_player_id=1,
+                )
             )
-        )
-        assert ok.wicket_type == "run_out"
-        for wicket in ("bowled", "caught", "lbw", "stumped", "hit_wicket"):
-            with pytest.raises(ValidationError, match="only a run out"):
+            assert ok.wicket_type == wicket
+        for wicket in every:
+            if wicket in allowed:
+                continue
+            with pytest.raises(ValidationError, match="only a"):
                 DeliveryCreate(
                     **_delivery(
                         extra_type=extra,
@@ -849,9 +903,47 @@ def test_api_allows_only_a_run_out_on_a_wide_or_no_ball():
 
 
 def test_api_accepts_every_wicket_type_on_a_normal_delivery():
-    for wicket in ("bowled", "caught", "lbw", "run_out", "stumped", "hit_wicket"):
+    for wicket in (
+        "bowled",
+        "caught",
+        "lbw",
+        "run_out",
+        "stumped",
+        "hit_wicket",
+        "obstructing_the_field",
+        "hit_the_ball_twice",
+    ):
         payload = DeliveryCreate(**_delivery(wicket_type=wicket, dismissed_player_id=1))
         assert payload.wicket_type == wicket
+
+
+def test_api_dead_ball_is_reserved_for_between_delivery_dismissals():
+    for wicket in ("retired_out", "timed_out"):
+        payload = DeliveryCreate(
+            **_delivery(extra_type="dead_ball", wicket_type=wicket, dismissed_player_id=1)
+        )
+        assert payload.extra_type == ExtraType.DEAD_BALL
+    for wicket in ("retired_out", "timed_out"):
+        with pytest.raises(ValidationError, match="dead ball"):
+            DeliveryCreate(**_delivery(wicket_type=wicket, dismissed_player_id=1))
+    with pytest.raises(ValidationError, match="dead ball"):
+        DeliveryCreate(
+            **_delivery(
+                extra_type="dead_ball",
+                runs_extras=1,
+                wicket_type="retired_out",
+                dismissed_player_id=1,
+            )
+        )
+    with pytest.raises(ValidationError, match="dead ball"):
+        DeliveryCreate(
+            **_delivery(
+                extra_type="dead_ball",
+                runs_batsman=1,
+                wicket_type="retired_out",
+                dismissed_player_id=1,
+            )
+        )
 
 
 def test_api_still_rejects_runs_on_the_bat_for_wide_and_byes():

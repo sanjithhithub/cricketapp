@@ -28,6 +28,7 @@ STALE_TABLE = "teams_old_uq"
 def _models_metadata():
     """Base.metadata with every model module imported, as alembic/env.py does."""
     import app.auth.models  # noqa: F401
+    import app.fielding.models  # noqa: F401
     import app.levels.models  # noqa: F401
     import app.matches.models  # noqa: F401
     import app.models  # noqa: F401

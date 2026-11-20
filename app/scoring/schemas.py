@@ -2,26 +2,76 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.scoring.enums import ExtraType, MatchFormat, WicketType
+from app.scoring.enums import (
+    DEAD_BALL_WICKETS,
+    WICKETS_ON_NO_BALL,
+    WICKETS_ON_WIDE,
+    ExtraType,
+    MatchFormat,
+    WicketType,
+)
 
 
 class DeliveryCreate(BaseModel):
     # Field order matters: Pydantic validates in declaration order and only
     # exposes the fields validated so far through `info.data`. `extra_type`
     # must therefore be declared BEFORE the run fields whose validators depend
-    # on it, otherwise those validators silently never run.
+    # on it, and the run components must be declared before `runs_extras`,
+    # whose validators need to see them. Reorder with care.
     striker_id: int
     non_striker_id: int
     bowler_id: int
     extra_type: ExtraType = ExtraType.NONE
+    # --- MCC run components -------------------------------------------------
+    # Any non-zero component switches the payload into "component shape": the
+    # whole extras figure is then the sum of these, which is the only way to
+    # say "a no ball that also went for byes". All zero keeps the legacy shape
+    # of one `extra_type` plus one `runs_extras` figure, so older clients are
+    # untouched. The engine (resolve_delivery_runs) does the actual splitting
+    # and is the single source of truth for the totals.
+    runs_wides: int = Field(0, ge=0)
+    runs_no_balls: int = Field(0, ge=0)
+    runs_byes: int = Field(0, ge=0)
+    runs_leg_byes: int = Field(0, ge=0)
+    # Penalty runs under Law 28 that belong to neither a wide nor a no ball.
+    runs_penalty: int = Field(0, ge=0)
     runs_batsman: int = Field(0, ge=0)
     runs_extras: int = Field(0, ge=0)
+    # Optional explicit boundary allowance (4 or 6). Omitted means "work it
+    # out from the total": anything that leaves 4 or 6 non-penalty runs was a
+    # boundary, and a boundary is never a change of ends.
+    boundary_runs: int | None = Field(None, ge=0)
+    # Whether the batters had crossed at the instant the ball became dead -
+    # the fact a run out turns on (Law 38.3). Omitted means derive it from the
+    # parity of the completed runs.
+    batters_crossed: bool | None = None
+    # The umpire disallowing the leg byes: those runs are struck out and the
+    # batters stay where they are.
+    leg_byes_allowed: bool = True
+    # Law 37.3: wilful obstruction that prevented a catch from being taken.
+    obstruction_prevented_catch: bool = False
+    # Idempotency key. A retry carrying the same id returns the current
+    # scorecard instead of scoring the ball a second time.
+    client_request_id: str | None = Field(None, max_length=64)
     wicket_type: WicketType | None = None
     dismissed_player_id: int | None = None
     # Optional fielding credit for a caught, run out or stumped dismissal. It
     # never affects the score; omitting it simply leaves the dismissal
     # unattributed, so older clients keep working unchanged.
     fielder_id: int | None = None
+
+    @staticmethod
+    def _component_sum(data) -> int:
+        return sum(
+            data.get(name, 0) or 0
+            for name in (
+                "runs_wides",
+                "runs_no_balls",
+                "runs_byes",
+                "runs_leg_byes",
+                "runs_penalty",
+            )
+        )
 
     @field_validator("wicket_type", mode="before")
     @classmethod
@@ -34,15 +84,24 @@ class DeliveryCreate(BaseModel):
 
     @field_validator("wicket_type")
     @classmethod
-    def validate_wicket_on_penalty_extra(cls, v, info):
-        # A wide / no-ball is dead by the time it reaches the batsman, so the
-        # only wicket it can carry is a run out.
-        if (
-            v is not None
-            and info.data.get("extra_type") in (ExtraType.WIDE, ExtraType.NO_BALL)
-            and v != WicketType.RUN_OUT
-        ):
-            raise ValueError("only a run out can be recorded on a wide or no-ball")
+    def validate_wicket_on_extra(cls, v, info):
+        extra = info.data.get("extra_type")
+        if extra == ExtraType.WIDE:
+            allowed = WICKETS_ON_WIDE
+        elif extra == ExtraType.NO_BALL:
+            allowed = WICKETS_ON_NO_BALL
+        else:
+            allowed = None
+        if v is not None and allowed is not None and v not in allowed:
+            label = extra.value.replace("_", " ")
+            options = ", ".join(w.value.replace("_", " ") for w in allowed)
+            raise ValueError(f"only a {options} can be recorded on a {label}")
+        if v is not None and extra == ExtraType.DEAD_BALL and v not in DEAD_BALL_WICKETS:
+            raise ValueError("a dead ball must record a retired out or timed out dismissal")
+        if v is not None and v in DEAD_BALL_WICKETS and extra != ExtraType.DEAD_BALL:
+            raise ValueError(
+                f"a {v.value.replace('_', ' ')} dismissal must be recorded as a dead ball"
+            )
         return v
 
     @field_validator("runs_extras")
@@ -50,17 +109,31 @@ class DeliveryCreate(BaseModel):
     def validate_extras_require_type(cls, v, info):
         # `extra_type` is an enum member by now, and a str enum compares equal to
         # its value, so these comparisons read exactly as they did when the field
-        # was a plain string.
-        if v != 0 and info.data.get("extra_type") == ExtraType.NONE:
+        # was a plain string. Runs that arrive as components rather than as a
+        # single extras figure are exempt from the "must have a type" rule only
+        # when the type they do carry is the one those components name.
+        if (
+            v != 0
+            and info.data.get("extra_type") == ExtraType.NONE
+            and cls._component_sum(info.data) == 0
+        ):
             raise ValueError("extra runs require an extra type")
+        if v != 0 and info.data.get("extra_type") == ExtraType.DEAD_BALL:
+            raise ValueError("a dead ball carries no runs")
         return v
 
     @field_validator("runs_extras")
     @classmethod
     def validate_penalty_extra_minimum(cls, v, info):
         # A wide and a no-ball are penalty deliveries worth at least one extra
-        # run before any runs scored off the bat.
-        if info.data.get("extra_type") in (ExtraType.WIDE, ExtraType.NO_BALL) and v < 1:
+        # run before any runs scored off the bat. A payload that states the
+        # penalty as a component instead of as `runs_extras` has satisfied the
+        # rule too, so the components count towards the minimum.
+        if (
+            info.data.get("extra_type") in (ExtraType.WIDE, ExtraType.NO_BALL)
+            and v < 1
+            and cls._component_sum(info.data) == 0
+        ):
             raise ValueError("a wide or no-ball is worth at least 1 extra run")
         return v
 
@@ -72,6 +145,8 @@ class DeliveryCreate(BaseModel):
             raise ValueError("runs on a wide must be recorded as extras")
         if extra_type in (ExtraType.BYE, ExtraType.LEG_BYE) and v != 0:
             raise ValueError("bye/leg-bye runs must be recorded as extras")
+        if extra_type == ExtraType.DEAD_BALL and v != 0:
+            raise ValueError("a dead ball carries no runs")
         return v
 
     @field_validator("dismissed_player_id")
@@ -157,6 +232,9 @@ class BatsmanCardOut(BaseModel):
     strike_rate: float
     out: bool
     dismissal: str | None
+    # Readable form of ``dismissal`` (``c X b Y``, ``lbw b Y``). Optional so a
+    # client built against the earlier payload still validates.
+    dismissal_text: str | None = None
     did_not_bat: bool
 
     model_config = ConfigDict(from_attributes=True)

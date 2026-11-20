@@ -48,12 +48,14 @@ from app.teams.crud import (
     get_team_squad,
     get_teams,
     replace_team,
+    set_playing_xi,
     set_team_captains,
     update_team,
 )
 from app.teams.schemas import (
     HeadToHeadAnalyticsResponse,
     PlayerBulkAssignResponse,
+    PlayingXISet,
     TeamAnalyticsResponse,
     TeamBulkPlayerAdd,
     TeamCaptainEligibleResponse,
@@ -331,6 +333,39 @@ async def set_team_captains_endpoint(
         captain_player_id=captain_id,
         vice_captain_player_id=vice_id,
     )
+
+
+@router.put(
+    "/teams/{team_id}/playing-xi",
+    response_model=TeamSquadResponse,
+    responses={"400": BAD_REQUEST, "404": NOT_FOUND},
+    summary="Pick the playing XI",
+    description=(
+        "Replace the team's playing XI with the eleven picked players and "
+        "what each one does on the field. The request is validated as a "
+        "unit: exactly 11 players - 1 wicketkeeper, 1 bowler and 9 other "
+        "fielders - all already on this team's squad. Anyone in the XI who "
+        "is not picked drops to substitute. The response is the team's "
+        "squad as it now stands."
+    ),
+)
+async def set_playing_xi_endpoint(
+    team_id: int,
+    data: PlayingXISet,
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    # Ownership first, so an unknown or foreign team is a 404 and the
+    # helper's remaining failures - an XI that is not eleven, has the wrong
+    # number of keepers or names a stranger - are 400s, the same split the
+    # captaincy PUT uses.
+    if await get_team(db, team_id, current_user.id) is None:
+        raise HTTPException(404, "Team not found")
+
+    squad, message = await set_playing_xi(db, team_id, data, current_user.id)
+    if squad is None:
+        raise HTTPException(400, message)
+    return TeamSquadResponse(**squad)
 
 
 @router.put(

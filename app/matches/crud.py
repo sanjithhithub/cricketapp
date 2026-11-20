@@ -122,7 +122,11 @@ async def _max_legal_balls_bowled(db: AsyncSession, match_id: int) -> int:
     )
     counts: dict[int, int] = {}
     for innings_id, extra in result.all():
-        if extra not in (ExtraType.WIDE.value, ExtraType.NO_BALL.value):
+        if extra not in (
+            ExtraType.WIDE.value,
+            ExtraType.NO_BALL.value,
+            ExtraType.DEAD_BALL.value,
+        ):
             counts[innings_id] = counts.get(innings_id, 0) + 1
     return max(counts.values(), default=0)
 
